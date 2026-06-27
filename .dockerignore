@@ -1,0 +1,13 @@
+node_modules
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+gridtracker.sqlite*
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+.dockerignore
+*.md
+.claude
+scratchpad

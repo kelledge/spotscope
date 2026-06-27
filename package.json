@@ -1,0 +1,19 @@
+{
+  "name": "gridtracker",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "start": "bun run backend/index.ts",
+    "dev": "bun --watch backend/index.ts",
+    "sniff": "bun run backend/wsjtx/sniff.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.12"
+  }
+}

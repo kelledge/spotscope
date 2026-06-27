@@ -1,0 +1,126 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-only  Copyright (C) 2026 Kevin Elledge -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SpotScope — live</title>
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <div id="theme">
+      <button data-pref="auto">auto</button>
+      <button data-pref="dark">dark</button>
+      <button data-pref="light">light</button>
+    </div>
+
+    <div id="leftcol">
+      <div id="hud">
+        <div class="hud-title">SpotScope · live <button id="tourBtn" class="hint-btn master" title="show / hide help on every panel">?</button></div>
+        <div class="panel-hint" id="hint-hud" hidden>Your session at a glance — current band, totals for spots and unique stations heard, and how many you've worked. When you transmit, a colored line here shows WSJT-X's live TX / CQ state. Tap any ⓘ for help on that panel.</div>
+        <div id="txstate" class="hud-tx" hidden></div>
+        <div class="hud-row"><span>rx</span><b id="rx">—</b></div>
+        <div class="hud-row"><span>band</span><b id="band">—</b></div>
+        <div class="hud-row"><span>spots</span><b id="count">0</b></div>
+        <div class="hud-row"><span>stations</span><b id="stationCount">0</b></div>
+        <div class="hud-row"><span>worked</span><b id="workedCount">0</b></div>
+        <div id="last" class="hud-last">waiting for decodes…</div>
+      </div>
+
+      <div id="exchanges">
+        <div class="hud-title">live exchanges <b id="exCount">0</b> <button class="hint-btn" data-hint="exchanges" title="what is this?">ⓘ</button></div>
+        <div class="panel-hint" id="hint-exchanges" hidden>QSOs happening right now. Each row names the two stations and tracks progress through the FT8 sequence (CQ → answer → report → R-report → RR73 / 73). “½” marks a half-copy (only one side decoded here); “↻” marks re-sent transmissions. Click a row to fly the map to those two stations.</div>
+        <div id="exList" class="ex-empty">no active exchanges</div>
+      </div>
+
+      <div id="bandpanel">
+        <div class="hud-title">band activity <button class="hint-btn" data-hint="bandpanel" title="what is this?">ⓘ</button></div>
+        <div class="panel-hint" id="hint-bandpanel" hidden>Where signals sit in the audio passband. Bars count decodes per 50 Hz bin across 0–3 kHz, so you can find a busy spot — or an empty gap to call in. The figures below are spot rates per decode, minute, and hour.</div>
+        <div class="band-now"><b id="bandNow">—</b><span id="dialNow"></span></div>
+        <div class="panel-sub"><span>spots / 50&nbsp;Hz bin</span><span>peak&nbsp;<b id="freqPeak">0</b></span></div>
+        <canvas id="freq" width="320" height="74"></canvas>
+        <div class="freq-axis"><span>0</span><span>1.5&nbsp;kHz</span><span>3&nbsp;kHz</span></div>
+        <div class="axis-caption">audio offset within passband (Hz)</div>
+        <div class="stat-grid">
+          <div><b id="rTotal">0</b><span>total</span></div>
+          <div><b id="rDecode">0</b><span>/decode</span></div>
+          <div><b id="rMin">0</b><span>/min</span></div>
+          <div><b id="rHour">0</b><span>/hour</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="cq">
+      <div class="cq-head">
+        <span class="hud-title">CQ callers <b id="cqCount">0</b> <button class="hint-btn" data-hint="cq" title="what is this?">ⓘ</button></span>
+        <div class="cq-sort">
+          <button data-cqsort="active" class="active">active</button>
+          <button data-cqsort="dist">dist</button>
+          <button data-cqsort="snr">snr</button>
+          <button data-cqsort="age">age</button>
+        </div>
+      </div>
+      <div class="panel-hint" id="hint-cq" hidden>Everyone calling CQ right now. Sort by “active” (a 0–100 liveliness score from QSO rate + on-air time), or by distance, SNR, or age. Click a caller and SpotScope tells WSJT-X to answer them. “hide worked” drops stations you've already logged within the chosen window.</div>
+      <div class="cq-filters">
+        <span class="cq-flabel">hide worked</span>
+        <button data-worked="0">off</button>
+        <button data-worked="86400" class="active">24h</button>
+        <button data-worked="604800">1w</button>
+        <button data-worked="2592000">1mo</button>
+      </div>
+      <div id="cqList"></div>
+    </div>
+
+    <div id="exdetail" hidden>
+      <div class="exd-head"><span id="exdTitle"></span><button id="exdClose" title="close — or press Esc / click the map">×</button></div>
+      <div id="exdBody"></div>
+    </div>
+
+    <div id="stnhist" hidden>
+      <div class="exd-head"><span id="stnTitle"></span><button id="stnClose" title="close — Esc / click the map">×</button></div>
+      <div id="stnBody"></div>
+    </div>
+
+    <div id="hunt">
+      <div class="hunt-head">
+        <span class="hud-title">hunt · sections <b id="huntCount">—</b> <button class="hint-btn" data-hint="hunt" title="what is this?">ⓘ</button></span>
+        <div class="hunt-toggles">
+          <label class="hunt-toggle"><input type="checkbox" id="huntEnable" /> on</label>
+          <label class="hunt-toggle" title="auto-queue best-SNR CQ from highlighted sections"><input type="checkbox" id="huntAuto" /> auto</label>
+          <button id="soundToggle" class="snd-btn" title="auto-hunt sound on/off">🔊</button>
+        </div>
+      </div>
+      <div class="panel-hint" id="hint-hunt" hidden>Target specific ARRL sections. “+” highlights a section to focus on; “−” hides it; “on” enables the filtering. “auto” auto-queues the strongest CQ from your highlighted sections (you still press Enable Tx in WSJT-X). 🔊 toggles the alert sound.</div>
+      <div class="hunt-legend"><b class="lg-hi">+</b> highlight (filter in) · <b class="lg-hide">−</b> hide (filter out)</div>
+      <div class="hunt-actions">
+        <button data-bulk="highlight">+ all</button>
+        <button data-bulk="hide">− all</button>
+        <button data-bulk="clear">clear</button>
+        <span class="hunt-spacer"></span>
+        <button data-hsort="state" class="active">state</button>
+        <button data-hsort="count">count</button>
+      </div>
+      <div id="huntList"></div>
+    </div>
+
+    <div id="myqso" hidden>
+      <div class="myqso-head" id="myqsoTitle"></div>
+      <div id="myqsoBody"></div>
+      <button id="myqsoStand" class="myqso-stand">✕ Stand down</button>
+    </div>
+
+    <div id="cqcall" hidden>
+      <div class="cqcall-head" id="cqcallTitle">📣 Calling CQ</div>
+      <div class="cqcall-sub" id="cqcallSub"></div>
+      <div id="cqcallList"></div>
+    </div>
+
+    <button id="abort" title="abort an in-progress transmission (HaltTx)">■ STOP TX</button>
+
+    <div id="card" hidden></div>
+    <div id="toast" hidden></div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

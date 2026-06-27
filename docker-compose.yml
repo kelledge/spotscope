@@ -1,0 +1,44 @@
+# SpotScope — build + run the release image.
+#
+# Uses host networking on purpose. WSJT-X talks UDP both ways: it sends decodes
+# to udp/2237, and SpotScope sends Reply/Configure/HaltTx *back* to whatever
+# address:port the datagram came from. Behind Docker's NAT bridge that return
+# path gets rewritten and the replies miss WSJT-X, so click-to-call / auto-hunt
+# break. host mode removes the NAT entirely: 127.0.0.1:2237 and the reply path
+# both Just Work, and the UI is reachable on the host at the port below.
+# (host networking requires Linux — which is the target here.)
+services:
+  spotscope:
+    build:
+      context: .
+      target: release
+    init: true              # run a tiny init as PID 1: forwards SIGTERM + reaps zombies
+    stop_grace_period: 10s
+    network_mode: host
+    environment:
+      PORT: 8787              # web UI / WebSocket / REST  -> http://localhost:8787
+      WSJTX_PORT: 2237        # WSJT-X "UDP Server" port (Settings -> Reporting)
+      GT_DB: /data/gridtracker.sqlite
+    volumes:
+      - spotscope-data:/data
+    restart: unless-stopped
+
+  # --- Bridge-network alternative (non-Linux / if you must avoid host mode) ---
+  # Explicit port forwarding instead of host networking. Inbound decodes work,
+  # but outbound commands to WSJT-X may be dropped by NAT — see the note above.
+  #
+  # spotscope-bridge:
+  #   build: { context: ., target: release }
+  #   ports:
+  #     - "8787:8787"         # web UI
+  #     - "2237:2237/udp"     # WSJT-X decodes
+  #   environment:
+  #     PORT: 8787
+  #     WSJTX_PORT: 2237
+  #     GT_DB: /data/gridtracker.sqlite
+  #   volumes:
+  #     - spotscope-data:/data
+  #   restart: unless-stopped
+
+volumes:
+  spotscope-data:
