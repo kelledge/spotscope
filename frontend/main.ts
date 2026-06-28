@@ -272,12 +272,25 @@ function addSpot(spot: Spot) {
   noteStation(spot);
   if (spot.rxLat != null && spot.rxLon != null) ourLL = { lat: spot.rxLat, lon: spot.rxLon };
   if (spot.rxCall) ourCall = spot.rxCall;
-  if (spot.toCall && spot.toCall === ourCall && spot.fromCall) {
-    cqPileup.set(spot.fromCall, { snr: spot.snr, grid: spot.txGrid, lastSeen: Date.now() }); // someone answering us
+  if (spot.toCall && spot.toCall === ourCall && spot.fromCall && spot.fromCall !== myQsoCall) {
+    // Someone calling us (not our current partner). Track their "interest": +1 per
+    // attempt this QSO, +1 per attempt this session (the latter persists).
+    const prev = cqPileup.get(spot.fromCall);
+    cqPileup.set(spot.fromCall, {
+      snr: spot.snr, grid: spot.txGrid, lastSeen: Date.now(),
+      qsoTries: qsoActive ? (prev?.qsoTries ?? 0) + 1 : 0,
+      sessionTries: (prev?.sessionTries ?? 0) + 1,
+    });
+    if (qsoActive) renderPileup();
+    else if (cqActive) cqCallCount = 0; // got a reply to our CQ — no longer calling into the void
   }
   // Our DX just transmitted to someone other than us -> they're working someone else.
   if (qsoActive && spot.fromCall === myQsoCall && spot.toCall && spot.toCall !== ourCall) {
     dxStolen(spot.toCall);
+  }
+  // Our partner signed off to us -> QSO closing; prime the next-up handoff.
+  if (qsoActive && spot.fromCall === myQsoCall && spot.toCall === ourCall && (spot.msgType === "rr73" || spot.msgType === "73")) {
+    finishHandoff();
   }
   autoConsider(spot); // auto-hunt: maybe queue this CQ
   // Watch-next-CQ: the armed target just called CQ -> alert + pre-stage. Small
@@ -291,6 +304,11 @@ function addSpot(spot: Spot) {
     el("band").textContent = `${spot.band} ${spot.mode}`;
     el("bandNow").textContent = spot.band;
     el("dialNow").textContent = `${spot.mode} · ${(spot.dialFreq / 1e6).toFixed(3)} MHz`;
+    // Follow WSJT-X: the latest decode's band/mode is what we're on now.
+    if (spot.band !== curBand || spot.mode !== curMode) {
+      curBand = spot.band; curMode = spot.mode;
+      renderCq(); refreshExchanges();
+    }
   }
   // HUD shows the two SNRs separately: our reception vs the embedded report.
   el("last").textContent =
@@ -308,9 +326,10 @@ function addSpot(spot: Spot) {
   const toPos = spot.toCall && spot.toLat != null && spot.toLon != null
     ? spread(spot.toCall, spot.toLat, spot.toLon, spot.toGrid) : null;
 
-  // In Field Day mode the map is FD-only: don't pulse/arc non-participants (their
-  // markers are hidden by applySectionFilter below).
-  const fdShow = (call: string | null) => !huntEnabled || (!!call && isFieldDay(call));
+  // Don't pulse/arc anything filtered off the map (wrong band/mode, or non-FD in
+  // Field Day mode) — their markers are hidden by applySectionFilter below.
+  const fdShow = (call: string | null) =>
+    (!huntEnabled || (!!call && isFieldDay(call))) && (!call || stationPassesBand(call));
 
   // Nodes: transmitter colored by OUR receive strength; recipient + us placed too.
   if (spot.fromCall && txPos) {
@@ -338,7 +357,7 @@ function addSpot(spot: Spot) {
     arcs.push({ line, hit, created: Date.now() });
   }
 
-  if (huntEnabled) applySectionFilter(); // keep new stations within the FD / hunt filter
+  if (huntEnabled || bandFilterOn) applySectionFilter(); // keep new stations within the active filters
 }
 
 // Fade + reap arcs.
@@ -360,6 +379,7 @@ let focusActive = false;
 // unless FD mode would hide it anyway, in which case keep it fully hidden so
 // focusing never resurrects filtered-out (non-FD) nodes.
 function dimStyle(call: string): L.PathOptions {
+  if (call !== ourCall && !stationPassesBand(call)) return { opacity: 0, fillOpacity: 0 };
   if (huntEnabled && call !== ourCall && !isFieldDay(call)) return { opacity: 0, fillOpacity: 0 };
   return { opacity: 0.12, fillOpacity: 0.05 };
 }
@@ -406,20 +426,20 @@ interface SInfo {
   spots: number; lastSnr: number; minSnr: number; maxSnr: number; sumSnr: number;
   grid: string | null; section: string | null; fdClass: string | null; located: boolean;
   fd: boolean; // sticky: has this station ever *advertised* Field Day?
-  lastDf: number; band: string | null; lastSeen: number;
+  lastDf: number; band: string | null; mode: string | null; lastSeen: number;
 }
 const stationInfo = new Map<string, SInfo>();
 function noteStation(spot: Spot) {
   if (!spot.fromCall) return;
   let i = stationInfo.get(spot.fromCall);
   if (!i) {
-    i = { spots: 0, lastSnr: spot.snr, minSnr: 99, maxSnr: -99, sumSnr: 0, grid: null, section: null, fdClass: null, located: false, fd: false, lastDf: spot.audioDf, band: spot.band, lastSeen: 0 };
+    i = { spots: 0, lastSnr: spot.snr, minSnr: 99, maxSnr: -99, sumSnr: 0, grid: null, section: null, fdClass: null, located: false, fd: false, lastDf: spot.audioDf, band: spot.band, mode: spot.mode, lastSeen: 0 };
     stationInfo.set(spot.fromCall, i);
   }
   i.spots++;
   i.lastSnr = spot.snr; i.sumSnr += spot.snr;
   i.minSnr = Math.min(i.minSnr, spot.snr); i.maxSnr = Math.max(i.maxSnr, spot.snr);
-  i.lastDf = spot.audioDf; i.band = spot.band; i.lastSeen = Date.parse(spot.receivedAt);
+  i.lastDf = spot.audioDf; i.band = spot.band; i.mode = spot.mode; i.lastSeen = Date.parse(spot.receivedAt);
   if (spot.txGrid) i.grid = spot.txGrid;
   if (spot.section) i.section = spot.section;
   if (spot.fdClass) i.fdClass = spot.fdClass;
@@ -482,7 +502,7 @@ interface Exchange {
   stage: string; stageRank: number; seenSteps: boolean[]; msgCount: number;
   cqerHeardResponder: number | null; responderHeardCqer: number | null;
   retransmissions: number; contenders: number; contenderCalls: string[];
-  halfCopy: boolean; lastSeen: string; band: string | null;
+  halfCopy: boolean; lastSeen: string; band: string | null; mode: string | null;
   log: { t: string; from: string; to: string; msg: string; snr: number; type: string }[];
 }
 let currentExchanges: Exchange[] = [];
@@ -528,7 +548,9 @@ function fdTag(cls: string | null, section: string | null): string {
 async function refreshExchanges() {
   try {
     const all: Exchange[] = await fetch("/api/exchanges").then((r) => r.json());
-    const ex = huntEnabled ? all.filter((e) => e.protocol === "fieldday") : all;
+    const ex = all
+      .filter((e) => !bandFilterOn || ((!curBand || !e.band || e.band === curBand) && (!curMode || !e.mode || e.mode === curMode)))
+      .filter((e) => !huntEnabled || e.protocol === "fieldday");
     currentExchanges = ex;
     el("exCount").textContent = String(ex.length);
     const list = el("exList");
@@ -836,7 +858,7 @@ exListEl.addEventListener("click", (ev) => {
 // --- CQ callers: stations calling CQ, gone once they engage. Sort age/dist/snr. ---
 interface CqCaller {
   call: string; snr: number; distanceKm: number | null; grid: string | null;
-  section: string | null; fdClass: string | null; fd: boolean; band: string | null; lastSeen: string; cqCount: number;
+  section: string | null; fdClass: string | null; fd: boolean; band: string | null; mode: string | null; lastSeen: string; cqCount: number;
   qsosLastHour: number; activeness: number; workedAt: number | null;
 }
 let cqCallers: CqCaller[] = [];
@@ -868,8 +890,16 @@ const myQsoLayer = L.layerGroup().addTo(map);
 // Calling-CQ state + the pileup answering US (decodes with to_call = our call).
 let cqActive = false;
 let cqLastEngagedAt = 0;
-interface PileEntry { snr: number; grid: string | null; lastSeen: number }
+let cqAuto = false;              // auto-reply to the strongest answerer
+let cqAutoCooldownUntil = 0;     // don't auto-fire more than once per ~cycle
+let cqCallCount = 0;             // CQ transmissions in this session with no reply yet
+let cqLastTx = false;            // were we transmitting a CQ on the previous status?
+let cqSuppressUntil = 0;         // after a manual cancel, don't re-open until Tx is really off
+interface PileEntry { snr: number; grid: string | null; lastSeen: number; qsoTries: number; sessionTries: number }
 const cqPileup = new Map<string, PileEntry>();
+let nextUp: string | null = null;     // who we've queued to work after this QSO
+let handoffDone = false;              // fired the handoff for the current QSO (debounce)
+const PILE_TTL = 150_000;             // drop pileup callers we haven't heard in this long
 const COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
 function bearing(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
@@ -886,8 +916,10 @@ function setMyState(s: MyState) {
   // WSJT-X has no "double-click" event, but double-clicking a decode sets the DX
   // Call, which rides in on Status. When it changes to a new station, surface that
   // station's detailed viewer (covers both an op double-click and our own /api/dx).
-  if (s.dxCall && s.dxCall !== prevDx) openStationHistory(s.dxCall);
-  const isCq = /^CQ\b/i.test((s.txMessage ?? "").trim()) && !s.dxCall;
+  // CQ is determined by the Tx message alone — WSJT-X often keeps a stale DX Call
+  // set while you call CQ, which must NOT make us look like we're working someone.
+  const isCq = /^CQ\b/i.test((s.txMessage ?? "").trim());
+  if (s.dxCall && s.dxCall !== prevDx && !isCq) openStationHistory(s.dxCall);
   const tx = document.getElementById("txstate");
   if (tx) {
     if (s.transmitting) { tx.textContent = isCq ? "🔴 TX · CQ" : `🔴 TX${s.dxCall ? " → " + s.dxCall : ""}`; tx.className = "hud-tx tx-on"; tx.hidden = false; }
@@ -905,37 +937,70 @@ function renderCqCall() {
   const now = Date.now();
   const answerers = [...cqPileup.entries()]
     .filter(([, v]) => now - v.lastSeen < 50_000)
-    .sort((a, b) => b[1].snr - a[1].snr);
-  el("cqcallSub").textContent = answerers.length ? `${answerers.length} answering — click to work` : "no answers yet — calling…";
+    .sort((a, b) => b[1].snr - a[1].snr); // strongest first (drives auto-reply too)
+  el("cqcallSub").textContent = answerers.length
+    ? `${answerers.length} answering — click to reply`
+    : `no answers yet — called ×${cqCallCount}`;
   el("cqcallList").innerHTML = answerers.map(([call, v]) => {
     const info = stationInfo.get(call);
     const dxLL = gridToLatLon(v.grid);
     const km = dxLL && ourLL ? `${Math.round(haversineKm(ourLL, dxLL)).toLocaleString()}km` : (v.grid ?? "");
     const sec = info?.section ? ` · ${info.section}` : "";
-    return `<div class="cqans" data-call="${call}" data-grid="${v.grid ?? ""}"><b>${call}</b><span style="color:${snrColor(v.snr)}">${v.snr}dB</span><span>${km}${sec}</span></div>`;
+    const worked = workedAt.has(call);
+    return `<div class="cqans${worked ? " dupe" : ""}" data-call="${call}" data-grid="${v.grid ?? ""}" title="${call} · ${v.sessionTries}× call${v.sessionTries === 1 ? "" : "s"}${worked ? " · ⚠ already worked (dupe)" : ""} — click to reply">
+      <b>${call}</b>${worked ? `<span class="pile-dupe">✓ dupe</span>` : ""}
+      <span style="color:${snrColor(v.snr)}">${v.snr}dB</span>
+      <span class="cqans-tries" title="${v.sessionTries} calls">×${v.sessionTries}</span>
+      <span class="cqans-loc">${km}${sec}</span>
+    </div>`;
   }).join("");
   el("cqcall").hidden = false;
+
+  // Auto-reply: jump on the strongest non-dupe answerer, once per ~cycle.
+  if (cqAuto && answerers.length && Date.now() > cqAutoCooldownUntil) {
+    const top = answerers.find(([call]) => !workedAt.has(call));
+    if (top) { cqAutoCooldownUntil = Date.now() + 12_000; replyToAnswerer(top[0]); }
+  }
+}
+// Reply to a station answering our CQ — /api/call replays their decode so WSJT-X
+// advances the message sequence (sends them the report), as if we double-clicked.
+async function replyToAnswerer(call: string) {
+  toast(`→ replying to ${call}…`);
+  try {
+    const r = await fetch("/api/call", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ call }) }).then((res) => res.json());
+    toast(r.ok ? `✓ replying to ${call} — sequence advanced` : `✗ ${r.hint ?? r.error}`, !!r.ok);
+  } catch { toast("✗ reply failed", false); }
 }
 
 function updateCqCall(s: MyState) {
   const isCq = /^CQ\b/i.test((s.txMessage ?? "").trim());
   const engaged = (s.txEnabled || s.transmitting) && isCq; // CQ keyed on the message, not dxCall
   if (engaged) cqLastEngagedAt = Date.now();
-  if (qsoActive) { if (cqActive) exitCqCall(); return; } // a real QSO took over (updateMyQso ran first)
-  if (!cqActive) { if (engaged) cqActive = true; else return; }
+  if (qsoActive) { if (cqActive) exitCqCall(); cqLastTx = false; return; } // a real QSO took over
+  // Tx disabled (we halted, or turned off Enable Tx in WSJT-X) -> leave the CQ state.
+  if (!s.txEnabled && !s.transmitting) { if (cqActive) exitCqCall(); cqLastTx = false; return; }
+  if (Date.now() < cqSuppressUntil) { if (cqActive) exitCqCall(); cqLastTx = false; return; } // just cancelled
+  if (!cqActive) { if (engaged) { cqActive = true; cqCallCount = 0; } else { cqLastTx = false; return; } }
+  // Count each fresh CQ keyup (transmit start) — how many times we've called with no reply.
+  if (isCq && s.transmitting && !cqLastTx) cqCallCount++;
+  cqLastTx = isCq && s.transmitting;
   renderCqCall();
 }
 setInterval(() => { if (cqActive && Date.now() - cqLastEngagedAt > 45000) exitCqCall(); }, 3000); // stopped calling
 
-el("cqcallList").addEventListener("click", async (e) => {
+el("cqcallList").addEventListener("click", (e) => {
   const row = (e.target as HTMLElement).closest(".cqans") as HTMLElement | null;
-  if (!row?.dataset.call) return;
-  const call = row.dataset.call, grid = row.dataset.grid || "";
-  toast(`→ pointing WSJT-X at ${call}…`);
-  try {
-    const r = await fetch("/api/dx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ call, grid }) }).then((res) => res.json());
-    toast(r.ok ? `✓ working ${call} — auto-sequence engaged` : `✗ ${r.hint ?? r.error}`, !!r.ok);
-  } catch { toast("✗ failed", false); }
+  if (row?.dataset.call) replyToAnswerer(row.dataset.call);
+});
+(document.getElementById("cqAuto") as HTMLInputElement).addEventListener("change", (e) => {
+  cqAuto = (e.target as HTMLInputElement).checked;
+  if (cqAuto) cqAutoCooldownUntil = 0; // allow an immediate pick
+});
+document.getElementById("cqcallStop")?.addEventListener("click", () => {
+  cqSuppressUntil = Date.now() + 4000; // don't let a stale Tx-enabled status re-open it
+  exitCqCall();
+  fetch("/api/halt", { method: "POST" }).catch(() => {});
+  toast("stopped calling CQ — Tx halted");
 });
 
 // "Queue" any station (CQ or not) — point WSJT-X at it via /api/dx (Configure +
@@ -1064,6 +1129,7 @@ function renderMyQso() {
   // jump/stand buttons mid-interaction (a click between mousedown/up is lost).
   const html = stolen + body;
   if (html !== lastMyQsoHtml) { el("myqsoBody").innerHTML = html; lastMyQsoHtml = html; }
+  renderPileup();
   el("myqso").hidden = false;
 
   myQsoLayer.clearLayers();
@@ -1076,6 +1142,73 @@ function renderMyQso() {
     if (dxLL) map.flyToBounds(L.latLngBounds([[ourLL.lat, ourLL.lon], [dxLL.lat, dxLL.lon]]).pad(0.3), { duration: 0.8, maxZoom: 8 });
     else map.flyTo([ourLL.lat, ourLL.lon], map.getZoom(), { duration: 0.6 });
   }
+}
+
+// The pileup trying to break into our current QSO, ranked by interest. Lives in
+// the my-QSO panel and feeds the next-up handoff.
+function pileSorted(): [string, PileEntry][] {
+  const now = Date.now();
+  return [...cqPileup.entries()]
+    .filter(([call, e]) => call !== myQsoCall && now - e.lastSeen < PILE_TTL)
+    .sort((a, b) => (b[1].qsoTries - a[1].qsoTries) || (b[1].sessionTries - a[1].sessionTries) || (b[1].snr - a[1].snr));
+}
+function renderPileup() {
+  const host = el("myqsoPile");
+  if (!qsoActive) { host.innerHTML = ""; return; }
+  const rows = pileSorted();
+  if (!rows.length) { host.innerHTML = `<div class="pile-sub">calling you · 0</div><div class="pile-none">no one breaking in yet</div>`; return; }
+  const head = `<div class="pile-sub">calling you · ${rows.length}${nextUp ? ` · next ▸ <b>${nextUp}</b>` : ""}</div>`;
+  host.innerHTML = head + rows.map(([call, e]) => {
+    const worked = workedAt.has(call);
+    return `<div class="pile-row${call === nextUp ? " next" : ""}${worked ? " dupe" : ""}" data-pile="${call}" title="${call} · ${e.qsoTries} this QSO / ${e.sessionTries} this session${worked ? " · ⚠ already worked (dupe)" : ""} — click to queue as next">
+      <b class="pile-call">${call}</b>
+      ${worked ? `<span class="pile-dupe" title="you already worked them">✓ dupe</span>` : ""}
+      <span class="pile-int" title="interest — ${e.qsoTries} this QSO / ${e.sessionTries} this session">${e.qsoTries}<small> · ${e.sessionTries}</small></span>
+      <span class="pile-snr" style="color:${snrColor(e.snr)}">${e.snr}dB</span>
+    </div>`;
+  }).join("");
+}
+function setNextUp(call: string) {
+  nextUp = nextUp === call ? null : call;
+  renderPileup();
+  if (nextUp) toast(`▸ next up: ${nextUp}`, true);
+}
+// A distinct two-note "ready" bell — not the hunt ding or the worked arpeggio.
+function handoffBell() {
+  if (!soundEnabled) return;
+  try {
+    audioCtx ??= new AudioContext();
+    audioCtx.resume?.();
+    const now = audioCtx.currentTime;
+    [[988, 0], [1319, 0.16]].forEach(([f, dt]) => { // B5 -> E6
+      const o = audioCtx!.createOscillator(), g = audioCtx!.createGain();
+      o.type = "square"; o.frequency.value = f;
+      const t0 = now + dt;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.24, t0 + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.4);
+      o.connect(g); g.connect(audioCtx!.destination);
+      o.start(t0); o.stop(t0 + 0.42);
+    });
+  } catch { /* no audio */ }
+}
+// QSO finished: hand off to the queued next-up (or auto-pick the highest-interest
+// non-dupe). Bell + jump/select the station + pre-stage WSJT-X; op presses Enable Tx.
+function finishHandoff() {
+  if (handoffDone || !qsoActive) return;
+  let target = nextUp;
+  if (!target) {
+    const now = Date.now();
+    target = [...cqPileup.entries()]
+      .filter(([call, e]) => call !== myQsoCall && !workedAt.has(call) && now - e.lastSeen < PILE_TTL)
+      .sort((a, b) => (b[1].qsoTries - a[1].qsoTries) || (b[1].sessionTries - a[1].sessionTries))[0]?.[0] ?? null;
+  }
+  if (!target) return; // nothing queued and no one worth auto-picking
+  handoffDone = true;
+  preQsoView = null; // we're continuing to operate — don't snap the map back
+  handoffBell();
+  openStationHistory(target); // jump + select + viewer, like a click
+  queueStation(target, stationInfo.get(target)?.grid ?? null); // pre-stage /api/dx
 }
 
 function updateMyQso(s: MyState) {
@@ -1106,6 +1239,9 @@ function updateMyQso(s: MyState) {
   if (!qsoActive) {
     if (s.transmitting && myQsoCall && myQsoCall !== dismissedDx) {
       qsoActive = true; clearAutoTarget();
+      // Fresh QSO: zero the per-QSO interest counts, drop any previous next-up, re-arm handoff.
+      for (const e of cqPileup.values()) e.qsoTries = 0;
+      nextUp = null; handoffDone = false;
       preQsoView ??= { center: map.getCenter(), zoom: map.getZoom() };
     } else return;
   }
@@ -1132,6 +1268,8 @@ function standDown() {
 // them. pointerdown fires on press, synchronously, before any re-render.
 el("myqso").addEventListener("pointerdown", (e) => {
   const t = e.target as HTMLElement;
+  const p = t.closest("[data-pile]") as HTMLElement | null;
+  if (p?.dataset.pile) { setNextUp(p.dataset.pile); return; }
   if (t.closest("#myqsoStand")) standDown();
   else { const j = t.closest("#myqsoJump") as HTMLElement | null; if (j) jumpToTheirExchange(j.dataset.other ?? null); }
 });
@@ -1144,6 +1282,7 @@ function onQsoLogged(qso: { call: string; grid: string | null; band: string | nu
   workedAt.set(qso.call, Date.now());
   renderCq();
   celebrate(qso);
+  finishHandoff(); // confirm the handoff before we tear down the QSO state
   dismissedDx = qso.call;
   exitMyQso();
 }
@@ -1213,6 +1352,9 @@ function renderCq() {
       const w = workedAt.get(c.call);
       if (w && Date.now() - w < workedWinMs) return false;
     }
+    // Band/mode filter: hide callers we can't work from the current band/mode.
+    if (bandFilterOn && curBand && c.band && c.band !== curBand) return false;
+    if (bandFilterOn && curMode && c.mode && c.mode !== curMode) return false;
     // Hunt on: drop non-FD + muted sections (highlighted floated to top below).
     if (huntEnabled) {
       if (sectionState.get(secOf(c)) === "hide") return false;
@@ -1376,20 +1518,44 @@ function isFieldDay(call: string): boolean {
   return !!stationInfo.get(call)?.fd;
 }
 
-// Station-marker visibility. Hunt off = everyone normal. Hunt on = non-FD
-// hidden, muted sections hidden, highlighted emphasized (others dimmed).
+// Band/mode filter — by default follow WSJT-X: only show stations on the band+mode
+// we're currently on (you can't work the rest; they're noise). curBand/curMode
+// track the latest decode; bandFilterOn toggles it.
+let curBand: string | null = null;
+let curMode: string | null = null;
+let bandFilterOn = true;
+function stationPassesBand(call: string): boolean {
+  if (!bandFilterOn) return true;
+  const i = stationInfo.get(call);
+  if (!i) return true; // unknown (e.g. a recipient we never copied) — don't hide
+  if (curBand && i.band && i.band !== curBand) return false;
+  if (curMode && i.mode && i.mode !== curMode) return false;
+  return true;
+}
+(document.getElementById("bandLock") as HTMLInputElement).addEventListener("change", (e) => {
+  bandFilterOn = (e.target as HTMLInputElement).checked;
+  applySectionFilter();
+  renderCq();
+  refreshExchanges();
+});
+
+// Station-marker visibility under the active filters (band/mode + Field Day).
 function applySectionFilter() {
   if (focusActive) return; // hover focus owns marker styles while active
-  if (!huntEnabled) { stations.forEach((s) => s.marker.setStyle({ opacity: 1, fillOpacity: 0.8 })); return; }
-  const anyHi = [...sectionState.values()].includes("highlight");
+  if (!huntEnabled && !bandFilterOn) { stations.forEach((s) => s.marker.setStyle({ opacity: 1, fillOpacity: 0.8 })); return; }
+  const anyHi = huntEnabled && [...sectionState.values()].includes("highlight");
   stations.forEach((s, call) => {
     if (call === ourCall) { s.marker.setStyle({ opacity: 1, fillOpacity: 0.9 }); return; } // always show ourselves
     const sec = stationInfo.get(call)?.section ?? null;
-    const st = sec ? sectionState.get(sec) : undefined;
-    if (st === "hide") s.marker.setStyle({ opacity: 0, fillOpacity: 0 });
-    else if (!isFieldDay(call)) s.marker.setStyle({ opacity: 0, fillOpacity: 0 }); // non-FD filtered out
-    else if (st === "highlight") s.marker.setStyle({ opacity: 1, fillOpacity: 1 });
-    else if (sec && anyHi) s.marker.setStyle({ opacity: 0.15, fillOpacity: 0.06 });
+    const st = huntEnabled && sec ? sectionState.get(sec) : undefined;
+    let hide = !stationPassesBand(call); // wrong band/mode -> gone
+    if (huntEnabled) {
+      if (st === "hide") hide = true;
+      else if (!isFieldDay(call)) hide = true; // non-FD filtered out
+    }
+    if (hide) { s.marker.setStyle({ opacity: 0, fillOpacity: 0 }); return; }
+    if (huntEnabled && st === "highlight") s.marker.setStyle({ opacity: 1, fillOpacity: 1 });
+    else if (huntEnabled && sec && anyHi) s.marker.setStyle({ opacity: 0.15, fillOpacity: 0.06 });
     else s.marker.setStyle({ opacity: 1, fillOpacity: 0.8 });
   });
 }

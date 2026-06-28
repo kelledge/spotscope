@@ -108,8 +108,10 @@ const server = Bun.serve({
       POST: async (req: Request) => {
         const { call } = await req.json().catch(() => ({ call: "" }));
         if (!call) return Response.json({ ok: false, error: "missing call" }, { status: 400 });
-        const decode = ingest.replyFor(call) ?? db.latestCqDecodeFor(call);
-        if (!decode) return Response.json({ ok: false, error: `no recent CQ from ${call}` }, { status: 404 });
+        // Prefer a decode they aimed at us (advances an answerer's sequence), then
+        // a CQ decode (start a fresh QSO), then the DB CQ fallback.
+        const decode = ingest.latestReplyFor(call) ?? ingest.replyFor(call) ?? db.latestCqDecodeFor(call);
+        if (!decode) return Response.json({ ok: false, error: `no recent decode from ${call}` }, { status: 404 });
         if (!wsjtxPeer) return Response.json({ ok: false, error: "WSJT-X not seen yet" }, { status: 503 });
         const blocked = await ensureAccepted();
         if (blocked) return blocked;

@@ -94,7 +94,7 @@ export function computeCqCallers(recent: Spot[], hour: Spot[] = recent, worked: 
       call, snr: s.snr, distanceKm: dist, grid: s.txGrid,
       section: callSection.get(call) ?? null, fdClass: callClass.get(call) ?? null,
       fd: fdCalls.has(call),
-      band: s.band, lastSeen: s.receivedAt, cqCount: cqCount.get(call) ?? 1,
+      band: s.band, mode: s.mode, lastSeen: s.receivedAt, cqCount: cqCount.get(call) ?? 1,
       qsosLastHour: hourStat.get(call)?.completed.size ?? 0,
       activeness: activenessOf(call),
       workedAt: worked.get(call) ?? null,

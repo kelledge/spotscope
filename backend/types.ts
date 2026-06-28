@@ -113,6 +113,7 @@ export interface Exchange {
   halfCopy: boolean; // we only decoded one side of the exchange
   lastSeen: string;
   band: string | null;
+  mode: string | null;
   log: ExchangeLogEntry[]; // play-by-play of the decodes, with OUR receive SNR per line
 }
 
@@ -148,6 +149,7 @@ export interface CqCaller {
   fdClass: string | null; // Field Day class the caller advertised, e.g. "2D", if any
   fd: boolean; // advertised Field Day (CQ FD or a parsed class) somewhere in the window
   band: string | null;
+  mode: string | null;
   lastSeen: string;
   cqCount: number; // how many CQs in the window (persistence)
   qsosLastHour: number; // inferred completed QSOs in the last hour

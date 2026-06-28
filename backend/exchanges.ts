@@ -16,7 +16,7 @@ import type { Exchange, Spot } from "./types.ts";
 
 interface D {
   from: string; to: string; msgType: string; reportDb: number | null;
-  raw: string; t: number; cycle: number | null; band: string | null; fdClass: string | null;
+  raw: string; t: number; cycle: number | null; band: string | null; mode: string | null; fdClass: string | null;
   section: string | null; cqModifier: string | null;
   snr: number; // OUR receive strength of this transmission
 }
@@ -100,7 +100,7 @@ export function computeExchanges(spots: Spot[]): Exchange[] {
     if (s.toCall) {
       directed.push({
         from: s.fromCall, to: s.toCall, msgType: s.msgType, reportDb: s.reportDb,
-        raw: s.rawMessage, t, cycle: s.decodeTimeMs, band: s.band, fdClass: s.fdClass,
+        raw: s.rawMessage, t, cycle: s.decodeTimeMs, band: s.band, mode: s.mode, fdClass: s.fdClass,
         section: s.section, cqModifier: s.cqModifier, snr: s.snr,
       });
     }
@@ -182,6 +182,7 @@ export function computeExchanges(spots: Spot[]): Exchange[] {
       halfCopy: fromCqer.length === 0 || fromResp.length === 0,
       lastSeen: new Date(Math.max(...msgs.map((m) => m.t))).toISOString(),
       band: msgs[msgs.length - 1].band,
+      mode: msgs[msgs.length - 1].mode,
       log: [...msgs].sort((a, b) => a.t - b.t).map((m) => ({
         t: new Date(m.t).toISOString(), from: m.from, to: m.to, msg: m.raw, snr: m.snr, type: m.msgType,
       })),

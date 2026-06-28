@@ -28,6 +28,9 @@ export class Ingest {
   // Latest CQ decode per callsign, kept so we can echo it back as a Reply (the
   // only decodes WSJT-X will act on are CQ/QRZ).
   private cqDecodes = new Map<string, ReplyDecode>();
+  // Latest decode per callsign that was addressed to US — replaying it as a Reply
+  // makes WSJT-X advance the QSO (as if we double-clicked their answer to our CQ).
+  private toUsDecodes = new Map<string, ReplyDecode>();
   private worked = new Set<string>(); // stations WE have logged (from QSOLogged)
   private txState = new Map<string, { transmitting: boolean; txMessage: string | null }>();
 
@@ -39,6 +42,8 @@ export class Ingest {
   }
 
   replyFor(call: string): ReplyDecode | undefined { return this.cqDecodes.get(call); }
+  // A decode from `call` aimed at us — reply to advance an answerer's sequence.
+  latestReplyFor(call: string): ReplyDecode | undefined { return this.toUsDecodes.get(call); }
   workedCalls(): string[] { return [...this.worked]; }
 
   handle(msg: NetworkMessage): void {
@@ -94,9 +99,16 @@ export class Ingest {
       });
     }
 
-    // Someone is calling/answering US — surface it for live observation.
+    // Someone is calling/answering US — surface it, and cache it so we can Reply
+    // (advance the QSO) to a station breaking into our CQ.
     if (st?.rxCall && p.toCall === st.rxCall) {
       console.log(`[→ ${st.rxCall}] ${d.snr >= 0 ? "+" : ""}${d.snr}dB  "${d.message}"`);
+      if (p.fromCall) {
+        this.toUsDecodes.set(p.fromCall, {
+          id: d.id ?? "", timeMs: d.timeMs, snr: d.snr, dt: d.dt, df: d.df,
+          mode: d.mode ?? "", message: d.message!, lowConfidence: d.lowConf,
+        });
+      }
     }
 
     // Resolve transmitter location: message grid -> cached station -> section.

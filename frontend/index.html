@@ -31,6 +31,7 @@
         <div id="txstate" class="hud-tx" hidden></div>
         <div class="hud-row"><span>rx</span><b id="rx">—</b></div>
         <div class="hud-row"><span>band</span><b id="band">—</b></div>
+        <label class="band-filter" title="show only stations on the band + mode WSJT-X is currently on"><input type="checkbox" id="bandLock" checked /> filter to WSJT-X band &amp; mode</label>
         <div class="hud-row"><span>spots</span><b id="count">0</b></div>
         <div class="hud-row"><span>stations</span><b id="stationCount">0</b></div>
         <div class="hud-row"><span>worked</span><b id="workedCount">0</b></div>
@@ -115,13 +116,15 @@
     <div id="myqso" hidden>
       <div class="myqso-head" id="myqsoTitle"></div>
       <div id="myqsoBody"></div>
+      <div id="myqsoPile"></div>
       <button id="myqsoStand" class="myqso-stand">✕ Stand down</button>
     </div>
 
     <div id="cqcall" hidden>
-      <div class="cqcall-head" id="cqcallTitle">📣 Calling CQ</div>
+      <div class="cqcall-head"><span id="cqcallTitle">📣 Calling CQ</span><label class="cq-auto" title="auto-reply to the strongest answerer"><input type="checkbox" id="cqAuto" /> auto</label></div>
       <div class="cqcall-sub" id="cqcallSub"></div>
       <div id="cqcallList"></div>
+      <button id="cqcallStop" class="cqcall-stop">✕ Stop calling CQ &amp; halt Tx</button>
     </div>
 
     <button id="abort" title="abort an in-progress transmission (HaltTx)">■ STOP TX</button>

@@ -48,10 +48,11 @@ export const SECTIONS: Record<string, LatLon> = {
   AK: { lat: 64.2, lon: -149.5 }, ID: { lat: 44.1, lon: -114.7 }, MT: { lat: 46.9, lon: -110.4 },
   OR: { lat: 44.0, lon: -120.5 }, EWA: { lat: 47.4, lon: -118.3 }, WWA: { lat: 47.4, lon: -122.3 },
   // RAC (Canada)
-  MAR: { lat: 45.5, lon: -63.0 }, NL: { lat: 53.0, lon: -60.0 }, QC: { lat: 52.0, lon: -72.0 },
+  NB: { lat: 46.5, lon: -66.0 }, NS: { lat: 45.0, lon: -63.0 }, PE: { lat: 46.4, lon: -63.2 },
+  NL: { lat: 53.0, lon: -60.0 }, QC: { lat: 52.0, lon: -72.0 },
   ONE: { lat: 45.4, lon: -75.7 }, ONN: { lat: 49.0, lon: -84.0 }, ONS: { lat: 43.5, lon: -80.0 },
-  GTA: { lat: 43.7, lon: -79.4 }, MB: { lat: 53.0, lon: -97.0 }, SK: { lat: 54.0, lon: -106.0 },
-  AB: { lat: 54.0, lon: -114.0 }, BC: { lat: 53.7, lon: -124.0 }, NT: { lat: 65.0, lon: -120.0 },
+  GH: { lat: 43.4, lon: -79.8 }, MB: { lat: 53.0, lon: -97.0 }, SK: { lat: 54.0, lon: -106.0 },
+  AB: { lat: 54.0, lon: -114.0 }, BC: { lat: 53.7, lon: -124.0 }, TER: { lat: 65.0, lon: -120.0 },
 };
 
 export function isSection(token: string): boolean {

@@ -92,8 +92,9 @@ export const SECTION_META: Record<string, SectionMeta> = {
   EWA: { name: "Eastern Washington", state: "Washington" },
   WWA: { name: "Western Washington", state: "Washington" },
   // RAC (Canada) — no US-states polygon
-  MAR: { name: "Maritime" }, NL: { name: "Newfoundland/Labrador" }, QC: { name: "Quebec" },
+  NB: { name: "New Brunswick" }, NS: { name: "Nova Scotia" }, PE: { name: "Prince Edward Island" },
+  NL: { name: "Newfoundland/Labrador" }, QC: { name: "Quebec" },
   ONE: { name: "Ontario East" }, ONN: { name: "Ontario North" }, ONS: { name: "Ontario South" },
-  GTA: { name: "Greater Toronto" }, MB: { name: "Manitoba" }, SK: { name: "Saskatchewan" },
-  AB: { name: "Alberta" }, BC: { name: "British Columbia" }, NT: { name: "Northern Territories" },
+  GH: { name: "Golden Horseshoe" }, MB: { name: "Manitoba" }, SK: { name: "Saskatchewan" },
+  AB: { name: "Alberta" }, BC: { name: "British Columbia" }, TER: { name: "Territories" },
 };
