@@ -18,6 +18,10 @@ services:
     environment:
       PORT: 8787              # web UI / WebSocket / REST  -> http://localhost:8787
       WSJTX_PORT: 2237        # WSJT-X "UDP Server" port (Settings -> Reporting)
+      # Rebroadcast WSJT-X traffic so other tools can share the feed (on by default).
+      # host networking exposes these ports on the host directly — no mapping needed.
+      UDP_FORWARD: "true"
+      UDP_FORWARD_TARGETS: "2238"   # comma list of "port" or "host:port"; default WSJTX_PORT+1
       GT_DB: /data/gridtracker.sqlite
     volumes:
       - spotscope-data:/data
@@ -32,9 +36,12 @@ services:
   #   ports:
   #     - "8787:8787"         # web UI
   #     - "2237:2237/udp"     # WSJT-X decodes
+  #     - "2238:2238/udp"     # forwarded WSJT-X traffic (for other tools)
   #   environment:
   #     PORT: 8787
   #     WSJTX_PORT: 2237
+  #     UDP_FORWARD: "true"
+  #     UDP_FORWARD_TARGETS: "2238"
   #     GT_DB: /data/gridtracker.sqlite
   #   volumes:
   #     - spotscope-data:/data

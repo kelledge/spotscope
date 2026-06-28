@@ -79,7 +79,12 @@ function greatCircle(a: [number, number], b: [number, number], seg = 48): [numbe
     Math.sin((lat2 - lat1) / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin((lon2 - lon1) / 2) ** 2,
   ));
   if (!d) return [a, b];
+  // The slerp below already traces the SHORTER arc (d is the minor angle). But
+  // atan2 snaps each longitude back into [-180,180], so an arc over the dateline
+  // jumps +179 -> -179 and Leaflet draws a flat line across the whole map. Unwrap
+  // the longitudes into a continuous run so it renders the real short path.
   const pts: [number, number][] = [];
+  let prevLon = NaN;
   for (let i = 0; i <= seg; i++) {
     const f = i / seg;
     const A = Math.sin((1 - f) * d) / Math.sin(d);
@@ -87,7 +92,13 @@ function greatCircle(a: [number, number], b: [number, number], seg = 48): [numbe
     const x = A * Math.cos(lat1) * Math.cos(lon1) + B * Math.cos(lat2) * Math.cos(lon2);
     const y = A * Math.cos(lat1) * Math.sin(lon1) + B * Math.cos(lat2) * Math.sin(lon2);
     const z = A * Math.sin(lat1) + B * Math.sin(lat2);
-    pts.push([deg(Math.atan2(z, Math.hypot(x, y))), deg(Math.atan2(y, x))]);
+    let lon = deg(Math.atan2(y, x));
+    if (!Number.isNaN(prevLon)) {
+      while (lon - prevLon > 180) lon -= 360;
+      while (lon - prevLon < -180) lon += 360;
+    }
+    prevLon = lon;
+    pts.push([deg(Math.atan2(z, Math.hypot(x, y))), lon]);
   }
   return pts;
 }
@@ -404,6 +415,17 @@ interface Exchange {
 }
 let currentExchanges: Exchange[] = [];
 
+// Role visual language for an exchange — one source of truth so the list, the map
+// rings, and the detail panel all agree on who's who. Each role gets a distinct
+// color + icon. "calling" (contenders still trying) is NEUTRAL grey, not a warning
+// color: they're just waiting, nothing's wrong. (.chip-cq / .pileup in CSS mirror
+// these for backgrounds the inline styles can't reach.)
+const EX_ROLE = {
+  cq:      { color: "#5fa8d3", icon: "📣", label: "CQ" },                 // the caller / host (steel blue, from chip-exch)
+  worked:  { color: "#34d399", icon: "🤝", label: "worked" },             // the chosen replier (winner)
+  calling: { color: "#94a3b8", icon: "⏳", label: "calling — no reply" }, // contenders, neutral
+} as const;
+
 // 6-segment QSO progress bar. Steps we copied are filled; steps within the
 // progressed range that we MISSED are holes; later steps are empty.
 const STAGE_STEPS = ["CQ", "grid", "report", "roger", "RR73", "73"];
@@ -436,13 +458,15 @@ async function refreshExchanges() {
     el("exCount").textContent = String(ex.length);
     const list = el("exList");
     if (!ex.length) { list.className = "ex-empty"; list.textContent = huntEnabled ? "no Field Day exchanges" : "no active exchanges"; return; }
-    list.className = "";
+    list.className = pinnedKey ? "pinned" : "";
     list.innerHTML = ex.map((e) => {
-      const role = e.role === "cq" ? `<span class="chip chip-cq">CQ</span> ` : "";
-      const pileup = e.contenders > 1 ? `<span class="pileup">▲ ${e.contenders} calling</span>` : "";
+      const pileup = e.contenders > 1 ? `<span class="pileup">${EX_ROLE.calling.icon} ${e.contenders} calling</span>` : "";
       const flags = `${e.halfCopy ? '<span class="half">½ copy</span>' : ""}${e.retransmissions ? `<span class="retx">↻ ${e.retransmissions}</span>` : ""}`;
-      return `<div class="exrow" data-cqer="${e.cqer}" data-resp="${e.responder}" data-cont="${e.contenderCalls.join(" ")}">
-        <div class="exrow-top"><span class="ex-pair">${role}<b data-call="${e.cqer}">${e.cqer}</b>${fdBadge(e.cqerClass)}<span class="swap">⇄</span><b data-call="${e.responder}">${e.responder}</b>${fdBadge(e.responderClass)}</span>${pileup}</div>
+      const selected = `${e.cqer}|${e.responder}` === pinnedKey;
+      const party = (call: string, r: typeof EX_ROLE.cq) =>
+        `<span class="ex-party-call" style="color:${r.color}" title="${r.label}"><span class="ex-ic">${r.icon}</span><b data-call="${call}">${call}</b></span>`;
+      return `<div class="exrow${selected ? " selected" : ""}" data-cqer="${e.cqer}" data-resp="${e.responder}" data-cont="${e.contenderCalls.join(" ")}">
+        <div class="exrow-top"><span class="ex-pair">${party(e.cqer, EX_ROLE.cq)}${fdBadge(e.cqerClass)}<span class="swap">⇄</span>${party(e.responder, EX_ROLE.worked)}${fdBadge(e.responderClass)}</span>${pileup}</div>
         <div class="exrow-stage">${progressBar(e.seenSteps, e.stageRank)}<span class="exstage">${e.stage}</span>${flags}</div>
         <div class="exrow-snr">
           <span>${e.cqer} hears ${e.responder}: ${snrCell(e.cqerHeardResponder)}</span>
@@ -477,19 +501,22 @@ function focusExchange(e: Exchange) {
   if (cqLL && rLL) {
     const snr = e.cqerHeardResponder ?? e.responderHeardCqer;
     L.polyline(greatCircle([cqLL.lat, cqLL.lng], [rLL.lat, rLL.lng]),
-      { color: snr != null ? snrColor(snr) : "#5fa8d3", weight: 3, opacity: 0.95 }).addTo(focusLayer);
+      { color: snr != null ? snrColor(snr) : EX_ROLE.worked.color, weight: 3, opacity: 0.95 }).addTo(focusLayer);
   }
-  // Still-trying: dashed faint paths from each contender to the CQer (no reply yet).
+  // Still-trying: dashed paths from each contender to the CQer (no reply yet). The
+  // DASH says "calling, unanswered". Drawn as a dark casing + a bold bright-blue
+  // line on top so the traces read over any basemap — thin/faint lines vanish.
   for (const c of contenders) {
     const cLL = at(c);
     if (cLL && cqLL) {
-      L.polyline(greatCircle([cLL.lat, cLL.lng], [cqLL.lat, cqLL.lng]),
-        { color: "#ff9d3a", weight: 1, opacity: 0.5, dashArray: "3 5" }).addTo(focusLayer);
+      const arc = greatCircle([cLL.lat, cLL.lng], [cqLL.lat, cqLL.lng]);
+      L.polyline(arc, { color: "#04111d", weight: 5, opacity: 0.6 }).addTo(focusLayer); // casing/halo
+      L.polyline(arc, { color: "#4fd1ff", weight: 2.5, opacity: 1, dashArray: "9 6" }).addTo(focusLayer);
     }
   }
-  ring(e.cqer, "#f4b41a", "CQ");
-  ring(e.responder, "#38d977", "✓ worked", 13, 3.5); // the winner, emphasized
-  for (const c of contenders) ring(c, "#ff9d3a", "calling — no reply");
+  ring(e.cqer, EX_ROLE.cq.color, `${EX_ROLE.cq.icon} CQ`);
+  ring(e.responder, EX_ROLE.worked.color, `${EX_ROLE.worked.icon} worked`, 13, 3.5); // the winner, emphasized
+  for (const c of contenders) ring(c, EX_ROLE.calling.color, `${EX_ROLE.calling.icon} ${EX_ROLE.calling.label}`);
 }
 
 // --- Pinned exchange detail view (opened by click) ---
@@ -524,9 +551,9 @@ function showExchangeDetail(e: Exchange) {
       <div>${e.cqer} hears ${e.responder}: ${snrCell(e.cqerHeardResponder)}</div>
       <div>${e.responder} hears ${e.cqer}: ${snrCell(e.responderHeardCqer)}</div>
     </div>
-    ${partyCard(e.cqer, e.role === "cq" ? "CQ" : "called", "#f4b41a", e.cqerClass)}
-    ${partyCard(e.responder, "✓ worked", "#38d977", e.responderClass)}
-    ${contenders.length ? `<div class="exd-sub">still calling — no reply (${contenders.length})</div>${contenders.map((c) => partyCard(c, "calling", "#ff9d3a", null)).join("")}` : ""}
+    ${partyCard(e.cqer, `${EX_ROLE.cq.icon} ${e.role === "cq" ? "CQ" : "called"}`, EX_ROLE.cq.color, e.cqerClass)}
+    ${partyCard(e.responder, `${EX_ROLE.worked.icon} worked`, EX_ROLE.worked.color, e.responderClass)}
+    ${contenders.length ? `<div class="exd-sub">still calling — no reply (${contenders.length})</div>${contenders.map((c) => partyCard(c, `${EX_ROLE.calling.icon} calling`, EX_ROLE.calling.color, null)).join("")}` : ""}
     <div class="exd-sub">event log · our copy</div>
     <div class="exd-log">${e.log.map((l) => {
       const time = new Date(l.t).toLocaleTimeString([], { hour12: false });
@@ -538,6 +565,7 @@ function showExchangeDetail(e: Exchange) {
 
 function closeDetail() {
   pinnedKey = null;
+  markExSelected(null);
   exdetail.hidden = true;
   clearFocus();
   if (prevView) { map.flyTo(prevView.center, prevView.zoom, { duration: 0.6 }); prevView = null; }
@@ -550,7 +578,7 @@ document.getElementById("exdClose")?.addEventListener("click", closeDetail);
 
 // --- Station history (click a node) ---
 const stnhist = document.getElementById("stnhist") as HTMLDivElement;
-function hideExchangeDetail() { pinnedKey = null; exdetail.hidden = true; prevView = null; clearFocus(); }
+function hideExchangeDetail() { pinnedKey = null; markExSelected(null); exdetail.hidden = true; prevView = null; clearFocus(); }
 function closeStationHistory() { stnhist.hidden = true; }
 interface HistGroup { partner: string; count: number; first: number; last: number; saw: number[]; rep: number[] }
 
@@ -615,6 +643,16 @@ document.addEventListener("keydown", (e) => {
 
 let lastExHover = "";
 const exListEl = el("exList");
+// Reflect the selected exchange in the list at once, without waiting for the
+// next 3s rebuild (which also applies these classes inline).
+function markExSelected(key: string | null) {
+  exListEl.classList.toggle("pinned", !!key);
+  exListEl.querySelectorAll(".exrow.selected").forEach((r) => r.classList.remove("selected"));
+  if (!key) return;
+  for (const r of Array.from(exListEl.querySelectorAll(".exrow")) as HTMLElement[]) {
+    if (`${r.dataset.cqer}|${r.dataset.resp}` === key) { r.classList.add("selected"); break; }
+  }
+}
 const placeCard = (ev: MouseEvent) => {
   const callEl = (ev.target as HTMLElement).closest("[data-call]") as HTMLElement | null;
   if (callEl?.dataset.call) {
@@ -624,6 +662,7 @@ const placeCard = (ev: MouseEvent) => {
   } else { hideCard(); bandHighlight(null); wsjtxHighlight(null); }
 };
 exListEl.addEventListener("mouseover", (ev) => {
+  if (pinnedKey) return; // a selected exchange owns the view; hover/preview is off
   const row = (ev.target as HTMLElement).closest(".exrow") as HTMLElement | null;
   if (row) {
     const key = `${row.dataset.cqer}|${row.dataset.resp}`;
@@ -635,7 +674,7 @@ exListEl.addEventListener("mouseover", (ev) => {
   }
   placeCard(ev as MouseEvent);
 });
-exListEl.addEventListener("mousemove", (ev) => placeCard(ev as MouseEvent));
+exListEl.addEventListener("mousemove", (ev) => { if (!pinnedKey) placeCard(ev as MouseEvent); });
 exListEl.addEventListener("mouseleave", () => { lastExHover = ""; refocusPinned(); hideCard(); bandHighlight(null); wsjtxHighlight(null); });
 
 // Click an exchange -> pin the detail view + fly the map to frame all parties.
@@ -648,18 +687,20 @@ exListEl.addEventListener("click", (ev) => {
   if (pinnedKey === key) { closeDetail(); return; } // click the pinned row again to exit
   if (!pinnedKey) prevView = { center: map.getCenter(), zoom: map.getZoom() }; // remember where to return
   pinnedKey = key;
+  markExSelected(key);
   focusExchange(e);
   showExchangeDetail(e);
-  // Zoom decision is based on the two QSO endpoints, NOT the pileup contenders.
-  const cqLL = stations.get(e.cqer)?.marker.getLatLng() ?? null;
-  const rLL = stations.get(e.responder)?.marker.getLatLng() ?? null;
-  if (cqLL && rLL) {
-    // both ends known -> frame them (plus any located contenders)
-    const pts = [cqLL, rLL, ...e.contenderCalls.map((c) => stations.get(c)?.marker.getLatLng()).filter((p): p is L.LatLng => !!p)];
+  // Frame EVERY located party — both QSO ends and the pileup callers — so a
+  // cross-continent pileup isn't lost when, e.g., the winner sent only a report
+  // (no grid): the located US callers must still pull the view out to fit them.
+  const pts = [e.cqer, e.responder, ...e.contenderCalls]
+    .map((c) => stations.get(c)?.marker.getLatLng())
+    .filter((p): p is L.LatLng => !!p);
+  if (pts.length >= 2) {
     map.flyToBounds(L.latLngBounds(pts).pad(0.25), { duration: 0.8, maxZoom: 9 });
-  } else if (cqLL || rLL) {
-    // half copy -> keep current zoom, just pan to the one node we know
-    map.panTo((cqLL ?? rLL)!, { animate: true, duration: 0.8 });
+  } else if (pts.length === 1) {
+    // only one node located -> keep current zoom, just pan to it
+    map.panTo(pts[0], { animate: true, duration: 0.8 });
   } // none located -> leave the view untouched
 });
 
@@ -767,6 +808,7 @@ function exitMyQso() {
   if (!qsoActive) return;
   qsoActive = false; myQsoCall = null; myQsoGrid = null; framedWithDx = null;
   lastTransmitting = false; reachOutMsg = null; reachOutCount = 0; dxStolenBy = null;
+  lastMyQsoHtml = ""; // force a fresh render next time the panel opens
   el("myqso").hidden = true; myQsoLayer.clearLayers();
   if (preQsoView) { map.flyTo(preQsoView.center, preQsoView.zoom, { duration: 0.8 }); preQsoView = null; }
 }
@@ -783,6 +825,7 @@ function dxStolen(other: string) {
 
 // Render from the CACHED target (myQsoCall/myQsoGrid) so an empty RX-period Status
 // doesn't blank the panel; only the live transmit state comes from myState.
+let lastMyQsoHtml = ""; // memo: skip innerHTML rewrites that wouldn't change anything
 function renderMyQso() {
   if (!myQsoCall) return;
   const dxLL = gridToLatLon(myQsoGrid);
@@ -818,7 +861,11 @@ function renderMyQso() {
   const stolen = dxStolenBy
     ? `<div class="myqso-stolen">✋ ${myQsoCall} is working ${dxStolenBy} — your Tx stopped<button id="myqsoJump" data-other="${dxStolenBy}">follow their QSO</button></div>`
     : "";
-  el("myqsoBody").innerHTML = stolen + body;
+  // Only touch the DOM when the content actually changed: status updates stream
+  // in while transmitting, and rebuilding innerHTML every time destroys the
+  // jump/stand buttons mid-interaction (a click between mousedown/up is lost).
+  const html = stolen + body;
+  if (html !== lastMyQsoHtml) { el("myqsoBody").innerHTML = html; lastMyQsoHtml = html; }
   el("myqso").hidden = false;
 
   myQsoLayer.clearLayers();
@@ -882,7 +929,10 @@ function standDown() {
   toast("stood down — Tx halted in WSJT-X");
 }
 
-el("myqso").addEventListener("click", (e) => {
+// pointerdown, not click: the panel re-renders on streaming status updates, so a
+// click (mousedown+up on the SAME node) can be lost if a rebuild lands between
+// them. pointerdown fires on press, synchronously, before any re-render.
+el("myqso").addEventListener("pointerdown", (e) => {
   const t = e.target as HTMLElement;
   if (t.closest("#myqsoStand")) standDown();
   else { const j = t.closest("#myqsoJump") as HTMLElement | null; if (j) jumpToTheirExchange(j.dataset.other ?? null); }

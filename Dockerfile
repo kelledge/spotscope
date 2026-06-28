@@ -17,6 +17,7 @@ ENV NODE_ENV=development
 COPY . .
 EXPOSE 8787
 EXPOSE 2237/udp
+EXPOSE 2238/udp
 CMD ["bun", "--watch", "backend/index.ts"]
 
 # ---- build: validate the tree, then strip dev deps -------------------------
@@ -39,4 +40,5 @@ COPY --from=build /app/frontend ./frontend
 RUN mkdir -p /data
 EXPOSE 8787
 EXPOSE 2237/udp
+EXPOSE 2238/udp
 CMD ["bun", "run", "backend/index.ts"]

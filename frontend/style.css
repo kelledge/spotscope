@@ -115,14 +115,35 @@ html[data-theme="light"] .leaflet-tile { filter: none; }
 #exchanges .hud-title { padding: 8px 10px 4px; }
 .exrow { cursor: default; }
 .exrow:hover { background: rgba(127,127,127,0.12); }
+/* A selected exchange owns the panel: loud accent cue + "click to exit", and the
+   hover preview is suppressed (other rows go quiet, this one stays put). */
+#exList.pinned .exrow { cursor: default; }
+#exList.pinned .exrow:hover { background: transparent; }
+#exList.pinned .exrow:not(.selected) { opacity: 0.4; }
+.exrow.selected, #exList.pinned .exrow.selected {
+  cursor: pointer; opacity: 1;
+  background: rgba(79, 209, 255, 0.14);
+  border-left: 3px solid var(--accent); padding-left: 1px;
+  box-shadow: inset 0 0 0 1px rgba(79, 209, 255, 0.3);
+}
+.exrow.selected .exrow-top::after {
+  content: "✕ click to exit"; margin-left: auto; padding-left: 8px;
+  color: var(--accent); font: 700 10px ui-monospace, monospace; letter-spacing: 0.04em; white-space: nowrap;
+}
 .focus-label { background: var(--panel); border: 1px solid var(--panel-border); color: var(--text); font: 10px ui-monospace, monospace; font-weight: 700; }
 #exList { overflow-y: auto; padding: 0 8px 6px; }
 #exList.ex-empty { padding: 10px; color: var(--muted); text-align: center; }
 .exrow { padding: 6px 4px; border-top: 1px solid rgba(127,127,127,0.12); }
 .exrow-top { display: flex; justify-content: space-between; align-items: center; }
 .ex-pair b { color: var(--text); }
+/* Role-coded callsign: the wrapping span carries the role color (set inline from
+   EX_ROLE), the callsign and its icon inherit it. */
+.ex-party-call { font-weight: 700; }
+.ex-pair .ex-party-call b { color: inherit; }
+.ex-ic { margin-right: 3px; font-size: 11px; }
 .ex-pair .swap { color: var(--muted); margin: 0 5px; }
-.pileup { background: #f4b41a; color: #2a1d00; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
+/* Pileup of still-calling contenders — neutral, they're just waiting (mirrors EX_ROLE.calling). */
+.pileup { background: rgba(148,163,184,0.18); color: #cbd5e1; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
 .exrow-stage { display: flex; gap: 8px; align-items: center; margin-top: 3px; font-size: 11px; }
 .exstage { color: var(--accent); font-weight: 700; }
 .exprog { display: inline-flex; gap: 2px; width: 66px; flex: 0 0 auto; }
