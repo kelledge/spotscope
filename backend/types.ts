@@ -165,6 +165,8 @@ export interface MyStatus {
   dxCall: string | null;
   dxGrid: string | null;
   txMessage: string | null;
+  band: string | null; // current band from the Status dial freq (e.g. "20m")
+  mode: string | null; // current mode (FT8/FT4/…)
   fastMode: boolean; // echoed back in Configure (it has no "no change" sentinel)
 }
 

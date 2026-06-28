@@ -284,6 +284,9 @@ function addSpot(spot: Spot) {
     if (qsoActive) renderPileup();
     else if (cqActive) cqCallCount = 0; // got a reply to our CQ — no longer calling into the void
   }
+  // A station we tried but lost (incl. our lingering stolen partner) may be circling
+  // back — check unconditionally, not just for non-partner callers.
+  maybeComeback(spot);
   // Our DX just transmitted to someone other than us -> they're working someone else.
   if (qsoActive && spot.fromCall === myQsoCall && spot.toCall && spot.toCall !== ourCall) {
     dxStolen(spot.toCall);
@@ -301,14 +304,8 @@ function addSpot(spot: Spot) {
   el("count").textContent = String(spotCount);
   if (spot.rxCall) el("rx").textContent = `${spot.rxCall}${spot.rxGrid ? " / " + spot.rxGrid : ""}`;
   if (spot.band) {
-    el("band").textContent = `${spot.band} ${spot.mode}`;
-    el("bandNow").textContent = spot.band;
     el("dialNow").textContent = `${spot.mode} · ${(spot.dialFreq / 1e6).toFixed(3)} MHz`;
-    // Follow WSJT-X: the latest decode's band/mode is what we're on now.
-    if (spot.band !== curBand || spot.mode !== curMode) {
-      curBand = spot.band; curMode = spot.mode;
-      renderCq(); refreshExchanges();
-    }
+    setCurrentBandMode(spot.band, spot.mode); // decode confirms the band/mode
   }
   // HUD shows the two SNRs separately: our reception vs the embedded report.
   el("last").textContent =
@@ -869,8 +866,8 @@ const workedAt = new Map<string, number>(); // call -> ms we last logged a QSO (
 // Short "ding" via Web Audio (created on a user gesture so autoplay allows it).
 // Our live operating state from WSJT-X — drives the in-QSO indicator, the OUR-QSO
 // heads-up panel, and the auto-hunt gate.
-interface MyState { transmitting: boolean; txEnabled: boolean; dxCall: string | null; dxGrid: string | null; txMessage: string | null }
-let myState: MyState = { transmitting: false, txEnabled: false, dxCall: null, dxGrid: null, txMessage: null };
+interface MyState { transmitting: boolean; txEnabled: boolean; dxCall: string | null; dxGrid: string | null; txMessage: string | null; band: string | null; mode: string | null }
+let myState: MyState = { transmitting: false, txEnabled: false, dxCall: null, dxGrid: null, txMessage: null, band: null, mode: null };
 let ourLL: { lat: number; lon: number } | null = null; // our station, from spot rx coords
 let ourCall: string | null = null;
 // Sticky QSO session: once engaged we stay until completion / abort / timeout,
@@ -916,6 +913,7 @@ function setMyState(s: MyState) {
   // WSJT-X has no "double-click" event, but double-clicking a decode sets the DX
   // Call, which rides in on Status. When it changes to a new station, surface that
   // station's detailed viewer (covers both an op double-click and our own /api/dx).
+  setCurrentBandMode(s.band, s.mode); // band/mode switch arrives here as an event, before any decode
   // CQ is determined by the Tx message alone — WSJT-X often keeps a stale DX Call
   // set while you call CQ, which must NOT make us look like we're working someone.
   const isCq = /^CQ\b/i.test((s.txMessage ?? "").trim());
@@ -1080,6 +1078,7 @@ function exitMyQso() {
 function dxStolen(other: string) {
   if (dxStolenBy === other) return;
   dxStolenBy = other;
+  noteTried(myQsoCall); // we tried them; if they circle back, offer to jump in
   fetch("/api/halt", { method: "POST" }).catch(() => {}); // stop chasing — we lost the race
   ding();
   toast(`✋ ${myQsoCall} started working ${other} — your Tx stopped`, false);
@@ -1258,10 +1257,46 @@ function jumpToTheirExchange(other: string | null) {
 
 function standDown() {
   dismissedDx = myQsoCall;
+  noteTried(myQsoCall); // if they come back to us later, offer to jump in
   exitMyQso();
   fetch("/api/halt", { method: "POST" }).catch(() => {});
   toast("stood down — Tx halted in WSJT-X");
 }
+
+// --- "Come back" watch: a station we tried but didn't complete (they worked
+// someone else, or we stood down) later directs traffic at US — offer to jump in. ---
+const triedRecently = new Map<string, number>(); // call -> ts we last tried them
+const TRIED_TTL = 300_000;
+let comebackCall: string | null = null;
+function noteTried(call: string | null) { if (call) triedRecently.set(call, Date.now()); }
+function maybeComeback(spot: Spot) {
+  const from = spot.fromCall;
+  if (!from || spot.toCall !== ourCall) return;
+  const t = triedRecently.get(from);
+  if (t == null) return;
+  if (Date.now() - t > TRIED_TTL) { triedRecently.delete(from); return; }
+  if (myState.transmitting && myQsoCall === from) return; // already re-engaged
+  if (comebackCall) return; // already prompting
+  triedRecently.delete(from);
+  comebackCall = from;
+  ding(); // attention
+  const b = el("comeback");
+  b.innerHTML = `<span>🔄 <b>${from}</b> came back to you — jump back in?</span><button id="comebackYes">Jump in</button><button id="comebackNo" title="dismiss">✕</button>`;
+  b.hidden = false;
+}
+function hideComeback() { comebackCall = null; const b = el("comeback"); b.hidden = true; b.innerHTML = ""; }
+el("comeback").addEventListener("click", (ev) => {
+  const t = ev.target as HTMLElement;
+  if (t.closest("#comebackYes") && comebackCall) {
+    const call = comebackCall;
+    hideComeback();
+    handoffBell();            // the "ready — enable Tx" tone
+    openStationHistory(call); // jump + select that station
+    replyToAnswerer(call);    // /api/call replays their decode -> WSJT-X advances the sequence
+  } else if (t.closest("#comebackNo")) {
+    hideComeback();
+  }
+});
 
 // pointerdown, not click: the panel re-renders on streaming status updates, so a
 // click (mousedown+up on the SAME node) can be lost if a rebuild lands between
@@ -1280,6 +1315,8 @@ el("myqso").addEventListener("pointerdown", (e) => {
 // QSO logged -> tasteful dopamine + return the map to where we were.
 function onQsoLogged(qso: { call: string; grid: string | null; band: string | null; exchangeReceived: string | null }) {
   workedAt.set(qso.call, Date.now());
+  triedRecently.delete(qso.call); // completed — no come-back prompt
+  if (comebackCall === qso.call) hideComeback();
   renderCq();
   celebrate(qso);
   finishHandoff(); // confirm the handoff before we tear down the QSO state
@@ -1524,6 +1561,17 @@ function isFieldDay(call: string): boolean {
 let curBand: string | null = null;
 let curMode: string | null = null;
 let bandFilterOn = true;
+// Set the current band/mode (from a Status switch event OR a decode) and refresh
+// everything the band/mode filter touches — so a band switch retargets instantly.
+function setCurrentBandMode(band: string | null, mode: string | null) {
+  if (!band || (band === curBand && mode === curMode)) return;
+  curBand = band; curMode = mode;
+  el("band").textContent = `${band}${mode ? " " + mode : ""}`;
+  el("bandNow").textContent = band;
+  renderCq();
+  refreshExchanges();
+  if (huntEnabled || bandFilterOn) applySectionFilter();
+}
 function stationPassesBand(call: string): boolean {
   if (!bandFilterOn) return true;
   const i = stationInfo.get(call);

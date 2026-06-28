@@ -257,6 +257,24 @@ body.fd-mode #hud, body.fd-mode #cq, body.fd-mode #hunt { border-left: 3px solid
 #watchBanner button { appearance: none; cursor: pointer; border: 0; background: transparent; color: #ffd98a; font-size: 15px; line-height: 1; }
 #watchBanner button:hover { color: #fff; }
 
+/* "Came back to you" prompt — a station we tried is calling us again */
+#comeback {
+  position: absolute; top: 58px; left: 50%; transform: translateX(-50%); z-index: 2200;
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(36, 16, 48, 0.94); color: #e3c9ff; border: 1px solid #b07bff;
+  border-radius: 8px; padding: 8px 12px; box-shadow: 0 4px 18px rgba(0,0,0,0.5);
+  font: 12px ui-monospace, "SF Mono", Menlo, monospace;
+  animation: comebackPulse 1.4s ease-in-out infinite;
+}
+@keyframes comebackPulse { 0%,100% { box-shadow: 0 0 14px rgba(176,123,255,0.35); } 50% { box-shadow: 0 0 26px rgba(176,123,255,0.65); } }
+#comeback[hidden] { display: none; }
+#comeback b { color: #fff; }
+#comeback button { appearance: none; cursor: pointer; border-radius: 5px; font: 700 11px ui-monospace, monospace; padding: 4px 9px; }
+#comeback #comebackYes { background: #b07bff; color: #1a0a2a; border: 0; }
+#comeback #comebackYes:hover { background: #c9a3ff; }
+#comeback #comebackNo { background: transparent; border: 1px solid #6b4a8a; color: #c9a3ff; }
+#comeback #comebackNo:hover { color: #fff; border-color: #b07bff; }
+
 /* Station dialog: pin the station's card + "talking to" header, scroll the list. */
 #stnBody { overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
 #stnBody > .exd-party, #stnBody > .exd-sub { flex: 0 0 auto; }

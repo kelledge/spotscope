@@ -52,12 +52,15 @@ export class Ingest {
         dialFreq: msg.dialFreq, mode: msg.mode, rxCall: msg.deCall, rxGrid: msg.deGrid,
       });
       this.logTx(msg);
-      // Broadcast our operating state when it changes (for auto-hunt + UI).
-      const key = `${msg.transmitting}|${msg.txEnabled}|${msg.dxCall ?? ""}|${msg.dxGrid ?? ""}|${msg.txMessage ?? ""}`;
+      // Broadcast our operating state when it changes (for auto-hunt + UI). The key
+      // includes dial freq + mode so a *band/mode switch* is its own event — the UI
+      // no longer has to wait for the next decode to learn we changed bands.
+      const band = freqToBand(msg.dialFreq);
+      const key = `${msg.transmitting}|${msg.txEnabled}|${msg.dxCall ?? ""}|${msg.dxGrid ?? ""}|${msg.txMessage ?? ""}|${msg.dialFreq}|${msg.mode ?? ""}`;
       if (key !== this.lastStatusKey) {
         this.lastStatusKey = key;
-        console.log(`[status] tx=${msg.transmitting} en=${msg.txEnabled} dx=${msg.dxCall ?? "-"}/${msg.dxGrid ?? "-"} msg="${msg.txMessage ?? ""}"`);
-        this.onStatus?.({ transmitting: msg.transmitting, txEnabled: msg.txEnabled, dxCall: msg.dxCall, dxGrid: msg.dxGrid, txMessage: msg.txMessage, fastMode: msg.fastMode });
+        console.log(`[status] tx=${msg.transmitting} en=${msg.txEnabled} ${band ?? "?"}/${msg.mode ?? "?"} dx=${msg.dxCall ?? "-"}/${msg.dxGrid ?? "-"} msg="${msg.txMessage ?? ""}"`);
+        this.onStatus?.({ transmitting: msg.transmitting, txEnabled: msg.txEnabled, dxCall: msg.dxCall, dxGrid: msg.dxGrid, txMessage: msg.txMessage, band, mode: msg.mode, fastMode: msg.fastMode });
       }
     } else if (msg.kind === "decode" && msg.message) {
       this.handleDecode(msg);
