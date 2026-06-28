@@ -18,7 +18,9 @@
     <div id="leftcol">
       <div id="hud">
         <div class="hud-title">SpotScope · live <button id="tourBtn" class="hint-btn master" title="show / hide help on every panel">?</button></div>
-        <div class="panel-hint" id="hint-hud" hidden>Your session at a glance — current band, totals for spots and unique stations heard, and how many you've worked. When you transmit, a colored line here shows WSJT-X's live TX / CQ state. Tap any ⓘ for help on that panel.</div>
+        <div class="panel-hint" id="hint-hud" hidden>Your session at a glance — current band, totals for spots and unique stations heard, and how many you've worked. When you transmit, a colored line here shows WSJT-X's live TX / CQ state. Tap any ⓘ for help on that panel. Type a callsign in the finder to jump straight to that station.</div>
+        <input id="stationSearch" class="stn-search" type="search" placeholder="🔎 find callsign…" list="stationOptions" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+        <datalist id="stationOptions"></datalist>
         <label class="fd-switch" title="Field Day mode — filter the whole UI to stations advertising Field Day (CQ FD, a class, or a section exchange)">
           <input type="checkbox" id="huntEnable" />
           <span class="fd-track"><span class="fd-thumb"></span></span>

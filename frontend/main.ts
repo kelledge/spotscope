@@ -43,6 +43,7 @@ const arcLayer = L.layerGroup().addTo(map);
 const pingLayer = L.layerGroup().addTo(map);
 const focusLayer = L.layerGroup().addTo(map);
 const autoTargetLayer = L.layerGroup().addTo(map);
+const selectLayer = L.layerGroup().addTo(map); // the currently-selected station's cue
 
 interface StationView { marker: L.CircleMarker; lastSeen: number; }
 const stations = new Map<string, StationView>();
@@ -650,7 +651,22 @@ document.getElementById("exdClose")?.addEventListener("click", closeDetail);
 // --- Station history (click a node) ---
 const stnhist = document.getElementById("stnhist") as HTMLDivElement;
 function hideExchangeDetail() { pinnedKey = null; markExSelected(null); exdetail.hidden = true; prevView = null; clearFocus(); }
-function closeStationHistory() { stnhist.hidden = true; }
+function closeStationHistory() { stnhist.hidden = true; clearSelection(); }
+
+// Map cue for the selected station (its details widget is open): a loud one-shot
+// burst the moment it's selected, plus a persistent outline while it stays open.
+let selectedCall: string | null = null;
+function selectStation(call: string) {
+  clearSelection();
+  selectedCall = call;
+  const s = stations.get(call);
+  if (!s) return; // off the map (e.g. found via search but never copied) — dialog still shows
+  const ll = s.marker.getLatLng();
+  const icon = (cls: string) => L.divIcon({ className: "", html: `<div class="${cls}"></div>`, iconSize: [24, 24], iconAnchor: [12, 12] });
+  L.marker(ll, { icon: icon("sel-outline"), interactive: false, zIndexOffset: 1100 }).addTo(selectLayer); // persistent
+  L.marker(ll, { icon: icon("sel-burst"), interactive: false, zIndexOffset: 1100 }).addTo(selectLayer); // transient
+}
+function clearSelection() { selectedCall = null; selectLayer.clearLayers(); }
 interface HistGroup { partner: string; count: number; first: number; last: number; saw: number[]; rep: number[] }
 
 function showStationHistory(call: string, history: Spot[]) {
@@ -692,11 +708,34 @@ async function openStationHistory(call: string) {
   hideExchangeDetail();
   const s = stations.get(call);
   if (s) map.panTo(s.marker.getLatLng(), { animate: true, duration: 0.5 });
+  selectStation(call); // loud one-shot + persistent outline on the map
   try {
     const history: Spot[] = await fetch(`/api/station?call=${encodeURIComponent(call)}`).then((r) => r.json());
     showStationHistory(call, history);
   } catch { /* ignore */ }
 }
+
+// --- Quick station finder: type a callsign, jump to its dialog (+ map node) ---
+const stationSearch = document.getElementById("stationSearch") as HTMLInputElement;
+const stationOptions = document.getElementById("stationOptions") as HTMLDataListElement;
+function refreshStationOptions() {
+  const calls = [...new Set([...stations.keys(), ...stationInfo.keys()])].sort();
+  stationOptions.innerHTML = calls.map((c) => `<option value="${c}"></option>`).join("");
+}
+let lastFind = "";
+function findStation() {
+  const call = stationSearch.value.trim().toUpperCase();
+  if (!call || call === lastFind) return; // dedupe Enter + change firing together
+  lastFind = call;
+  setTimeout(() => { lastFind = ""; }, 800);
+  openStationHistory(call);
+  if (!stations.has(call) && !stationInfo.has(call)) toast(`${call} — not heard this session`, false);
+}
+stationSearch.addEventListener("focus", refreshStationOptions);
+stationSearch.addEventListener("change", findStation); // picking a suggestion
+stationSearch.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") { findStation(); stationSearch.blur(); }
+});
 document.getElementById("stnClose")?.addEventListener("click", closeStationHistory);
 
 // Easy dismiss: click the map background or press Esc to drop any open panel.
