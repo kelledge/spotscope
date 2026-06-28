@@ -7,11 +7,13 @@ import type { Spot } from "./types.ts";
 
 let seq = 0;
 const base = Date.parse("2026-06-27T19:00:00Z");
-function spot(cycle: number, from: string | null, to: string | null, msgType: string, raw: string, reportDb: number | null = null): Spot {
+function spot(cycle: number, from: string | null, to: string | null, msgType: string, raw: string, reportDb: number | null = null, extra: Partial<Spot> = {}): Spot {
   return {
     fromCall: from, toCall: to, msgType, rawMessage: raw, reportDb,
     receivedAt: new Date(base + cycle * 15000 + seq++ * 10).toISOString(),
     decodeTimeMs: cycle, band: "20m",
+    cqModifier: null, section: null, fdClass: null,
+    ...extra,
   } as unknown as Spot;
 }
 
@@ -39,6 +41,39 @@ test("pileup + bidirectional reports + retransmission", () => {
   expect(e.stageRank).toBe(5); // RR73
   expect(e.retransmissions).toBe(1);
   expect(e.halfCopy).toBe(false);
+  expect(e.protocol).toBe("ft8");
+  expect(e.steps.length).toBe(6);
+});
+
+test("field day exchange uses the FD stage model (no grid/report steps)", () => {
+  const ex = computeExchanges([
+    spot(1, "W3SK", null, "cq", "CQ FD W3SK FN20", null, { cqModifier: "FD" }),
+    spot(2, "K9OM", "W3SK", "exchange", "W3SK K9OM 1D WI", null, { fdClass: "1D", section: "WI" }),
+    spot(3, "W3SK", "K9OM", "exchange", "K9OM W3SK R 2A IL", null, { fdClass: "2A", section: "IL" }),
+    spot(4, "K9OM", "W3SK", "rr73", "W3SK K9OM RR73"),
+  ]);
+  expect(ex.length).toBe(1);
+  const e = ex[0];
+  expect(e.protocol).toBe("fieldday");
+  expect(e.steps.length).toBe(4);
+  expect(e.cqer).toBe("W3SK");
+  expect(e.responder).toBe("K9OM");
+  expect(e.stageRank).toBe(4); // RR73 closes the FD exchange
+  expect(e.cqerClass).toBe("2A");
+  expect(e.responderClass).toBe("1D");
+  expect(e.cqerSection).toBe("IL");
+  expect(e.responderSection).toBe("WI");
+  expect(e.seenSteps[0]).toBe(true); // CQ copied
+  expect(e.seenSteps.every(Boolean)).toBe(true); // full copy: CQ → class+sect → R+exch → RR73
+});
+
+test("field day detected from exchange content even without the CQ", () => {
+  const ex = computeExchanges([
+    spot(2, "K9OM", "W3SK", "exchange", "W3SK K9OM 1D WI", null, { fdClass: "1D", section: "WI" }),
+    spot(3, "W3SK", "K9OM", "exchange", "K9OM W3SK R 2A IL", null, { fdClass: "2A", section: "IL" }),
+  ]);
+  expect(ex.length).toBe(1);
+  expect(ex[0].protocol).toBe("fieldday");
 });
 
 test("half-copy: only one side decoded (kept when ≥2 messages)", () => {

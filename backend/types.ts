@@ -47,6 +47,7 @@ export interface Spot {
   toCall: string | null;
   msgType: MsgType;
   exchange: string | null;
+  cqModifier: string | null; // CQ modifier from the CQ text (DX / FD / POTA / …)
   section: string | null;
   fdClass: string | null; // Field Day class, e.g. "2D"
   // Embedded report carried in the message text (e.g. "W1ABC K9OM R-10"): how
@@ -92,10 +93,16 @@ export interface Exchange {
   responder: string; // the station working them (the chosen one, if a pileup)
   cqerClass: string | null; // Field Day class each station sent, e.g. "2D"
   responderClass: string | null;
+  cqerSection: string | null; // ARRL section each station sent in its exchange, e.g. "EPA"
+  responderSection: string | null;
   role: "cq" | "called"; // "cq" = we actually saw the CQ; "called" = inferred from who was called first
+  // Which contest protocol's stage model applies. Field Day has no grid/report
+  // steps (it's class+section), so the steps differ — see `steps`.
+  protocol: "ft8" | "fieldday";
+  steps: string[]; // canonical step labels for this protocol (the progress-bar segments)
   stage: string; // human label of how far the QSO has progressed
-  stageRank: number; // 0..6 (CQ → grid → report → roger → RRR/RR73 → 73)
-  seenSteps: boolean[]; // length 6: which of the canonical steps we actually copied (rest are holes)
+  stageRank: number; // 1..steps.length (0 = unknown)
+  seenSteps: boolean[]; // length steps.length: which canonical steps we copied (rest are holes)
   msgCount: number; // total decodes observed in this pair (for filtering noise)
   // Bidirectional link SNR from the *embedded* reports — NOT our receive SNR.
   cqerHeardResponder: number | null; // avg report the CQer sent (how the CQer hears the responder)
@@ -137,7 +144,9 @@ export interface CqCaller {
   snr: number; // OUR receive strength of their latest CQ
   distanceKm: number | null; // great-circle from our station to theirs
   grid: string | null;
-  section: string | null;
+  section: string | null; // ARRL section the caller advertised (from an exchange), if any
+  fdClass: string | null; // Field Day class the caller advertised, e.g. "2D", if any
+  fd: boolean; // advertised Field Day (CQ FD or a parsed class) somewhere in the window
   band: string | null;
   lastSeen: string;
   cqCount: number; // how many CQs in the window (persistence)

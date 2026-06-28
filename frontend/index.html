@@ -19,6 +19,11 @@
       <div id="hud">
         <div class="hud-title">SpotScope · live <button id="tourBtn" class="hint-btn master" title="show / hide help on every panel">?</button></div>
         <div class="panel-hint" id="hint-hud" hidden>Your session at a glance — current band, totals for spots and unique stations heard, and how many you've worked. When you transmit, a colored line here shows WSJT-X's live TX / CQ state. Tap any ⓘ for help on that panel.</div>
+        <label class="fd-switch" title="Field Day mode — filter the whole UI to stations advertising Field Day (CQ FD, a class, or a section exchange)">
+          <input type="checkbox" id="huntEnable" />
+          <span class="fd-track"><span class="fd-thumb"></span></span>
+          <span class="fd-label">Field Day mode</span>
+        </label>
         <div id="txstate" class="hud-tx" hidden></div>
         <div class="hud-row"><span>rx</span><b id="rx">—</b></div>
         <div class="hud-row"><span>band</span><b id="band">—</b></div>
@@ -86,12 +91,11 @@
       <div class="hunt-head">
         <span class="hud-title">hunt · sections <b id="huntCount">—</b> <button class="hint-btn" data-hint="hunt" title="what is this?">ⓘ</button></span>
         <div class="hunt-toggles">
-          <label class="hunt-toggle"><input type="checkbox" id="huntEnable" /> on</label>
           <label class="hunt-toggle" title="auto-queue best-SNR CQ from highlighted sections"><input type="checkbox" id="huntAuto" /> auto</label>
           <button id="soundToggle" class="snd-btn" title="auto-hunt sound on/off">🔊</button>
         </div>
       </div>
-      <div class="panel-hint" id="hint-hunt" hidden>Target specific ARRL sections. “+” highlights a section to focus on; “−” hides it; “on” enables the filtering. “auto” auto-queues the strongest CQ from your highlighted sections (you still press Enable Tx in WSJT-X). 🔊 toggles the alert sound.</div>
+      <div class="panel-hint" id="hint-hunt" hidden>Target specific ARRL sections. Turn on “Field Day mode” (top panel) to fill this list and filter the whole UI to stations advertising Field Day. “+” highlights a section to focus on; “−” hides it. “auto” auto-queues the strongest CQ from your highlighted sections (you still press Enable Tx in WSJT-X). 🔊 toggles the alert sound.</div>
       <div class="hunt-legend"><b class="lg-hi">+</b> highlight (filter in) · <b class="lg-hide">−</b> hide (filter out)</div>
       <div class="hunt-actions">
         <button data-bulk="highlight">+ all</button>

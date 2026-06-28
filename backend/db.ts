@@ -16,11 +16,11 @@ import { locate } from "./geo/locate.ts";
 const INSERT_SQL = `
   INSERT INTO messages (
     received_at, instance, rx_call, rx_grid, band, dial_freq, mode,
-    snr, dt, audio_df, decode_time_ms, raw_message, from_call, to_call, msg_type, exchange, section,
+    snr, dt, audio_df, decode_time_ms, raw_message, from_call, to_call, msg_type, exchange, cq_modifier, section,
     report_db, fd_class, tx_grid, tx_source, to_grid, to_section, to_source, is_new, low_conf, off_air
   ) VALUES (
     $received_at, $instance, $rx_call, $rx_grid, $band, $dial_freq, $mode,
-    $snr, $dt, $audio_df, $decode_time_ms, $raw_message, $from_call, $to_call, $msg_type, $exchange, $section,
+    $snr, $dt, $audio_df, $decode_time_ms, $raw_message, $from_call, $to_call, $msg_type, $exchange, $cq_modifier, $section,
     $report_db, $fd_class, $tx_grid, $tx_source, $to_grid, $to_section, $to_source, $is_new, $low_conf, $off_air
   ) RETURNING id;`;
 
@@ -69,6 +69,7 @@ export class Db {
         to_call     TEXT,
         msg_type    TEXT,
         exchange    TEXT,
+        cq_modifier TEXT,
         section     TEXT,
         report_db   INTEGER,
         fd_class    TEXT,
@@ -119,7 +120,7 @@ export class Db {
       $band: s.band, $dial_freq: s.dialFreq, $mode: s.mode, $snr: s.snr, $dt: s.dt,
       $audio_df: s.audioDf, $decode_time_ms: s.decodeTimeMs, $raw_message: s.rawMessage,
       $from_call: s.fromCall, $to_call: s.toCall,
-      $msg_type: s.msgType, $exchange: s.exchange, $section: s.section, $report_db: s.reportDb,
+      $msg_type: s.msgType, $exchange: s.exchange, $cq_modifier: s.cqModifier, $section: s.section, $report_db: s.reportDb,
       $fd_class: s.fdClass,
       $tx_grid: s.txGrid, $tx_source: s.txSource, $to_grid: s.toGrid, $to_section: s.toSection,
       $to_source: s.toSource, $is_new: s.isNew ? 1 : 0, $low_conf: s.lowConf ? 1 : 0,
@@ -213,7 +214,7 @@ function rowToSpot(r: any): Spot {
     mode: r.mode, snr: r.snr, dt: r.dt, audioDf: r.audio_df, decodeTimeMs: r.decode_time_ms,
     rawMessage: r.raw_message,
     fromCall: r.from_call, toCall: r.to_call, msgType: r.msg_type, exchange: r.exchange,
-    section: r.section, fdClass: r.fd_class, reportDb: r.report_db,
+    cqModifier: r.cq_modifier, section: r.section, fdClass: r.fd_class, reportDb: r.report_db,
     txGrid: r.tx_grid, txLat: txLL?.lat ?? null, txLon: txLL?.lon ?? null, txSource: r.tx_source,
     toGrid: r.to_grid, toSection: r.to_section, toLat: toLL?.lat ?? null, toLon: toLL?.lon ?? null, toSource: r.to_source,
     isNew: !!r.is_new, lowConf: !!r.low_conf, offAir: !!r.off_air,

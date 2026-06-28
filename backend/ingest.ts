@@ -150,6 +150,7 @@ export class Ingest {
       toCall: p.toCall,
       msgType: p.msgType,
       exchange: p.exchange,
+      cqModifier: p.cqModifier,
       section: txSection,
       fdClass: p.fdClass,
       reportDb: p.reportDb,

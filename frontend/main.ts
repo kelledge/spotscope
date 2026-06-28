@@ -47,7 +47,9 @@ const autoTargetLayer = L.layerGroup().addTo(map);
 interface StationView { marker: L.CircleMarker; lastSeen: number; }
 const stations = new Map<string, StationView>();
 
-interface ArcView { line: L.Polyline; created: number; }
+// `line` is the visible arc; `hit` is a wide invisible line on top so the thin
+// arc is easy to click (-> pin its exchange). Both fade/reap together.
+interface ArcView { line: L.Polyline; hit: L.Polyline; created: number; }
 const arcs: ArcView[] = [];
 const ARC_TTL = 30_000;
 
@@ -103,6 +105,25 @@ function greatCircle(a: [number, number], b: [number, number], seg = 48): [numbe
   return pts;
 }
 
+// Deterministic [0,1) hash of a string (FNV-1a, seeded) — stable per callsign so
+// a station's jitter never shifts between the 3s re-renders.
+function hash01(s: string, seed: number): number {
+  let h = (2166136261 ^ seed) >>> 0;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0) / 4294967296;
+}
+
+// Spread same-grid stations so they don't stack on the square's center. The true
+// position within the square is unknown, so a deterministic per-call offset
+// (scaled to the grid's precision) is more honest than piling everyone on center.
+function spread(call: string, lat: number, lon: number, grid: string | null): [number, number] {
+  const g = grid?.toUpperCase() ?? "";
+  const [mlat, mlon] = /^[A-R]{2}[0-9]{2}[A-X]{2}$/.test(g) ? [0.018, 0.036] // 6-char subsquare
+    : /^[A-R]{2}[0-9]{2}$/.test(g) ? [0.34, 0.7] // 4-char square
+    : [0.45, 0.6]; // gridless (section) — biggest spread
+  return [lat + mlat * (2 * hash01(call, 1) - 1), lon + mlon * (2 * hash01(call, 2) - 1)];
+}
+
 // Our reception of a station is shown as an expanding "sonar" pulse colored by
 // receive strength — NOT an arc back to us.
 function ping(lat: number, lon: number, snr: number) {
@@ -128,8 +149,8 @@ function upsertStation(call: string, lat: number, lon: number, opts: { isRx?: bo
   let s = stations.get(call);
   if (!s) {
     const marker = L.circleMarker([lat, lon], {
-      radius: opts.isRx ? 6 : 4, color, weight: 1, fillColor: color, fillOpacity: 0.8,
-    }).bindTooltip(call, { direction: "top" });
+      radius: opts.isRx ? 8 : 6, color, weight: 1.5, fillColor: color, fillOpacity: 0.8,
+    }).bindTooltip(mapLabel(call), { direction: "top" });
     marker.on("click", () => openStationHistory(call)); // click a node -> its history
     marker.addTo(stationLayer);
     stations.set(call, { marker, lastSeen: Date.now() });
@@ -137,8 +158,18 @@ function upsertStation(call: string, lat: number, lon: number, opts: { isRx?: bo
   } else {
     s.marker.setLatLng([lat, lon]);
     s.lastSeen = Date.now();
+    s.marker.setTooltipContent(mapLabel(call)); // FD class/section may have arrived since
     if (opts.isRx || opts.ourSnr != null) s.marker.setStyle({ color, fillColor: color });
   }
+}
+
+// Marker tooltip: the callsign, plus class + section for Field Day participants so
+// the map reads their exchange at a glance (not just on hover).
+function mapLabel(call: string): string {
+  const i = stationInfo.get(call);
+  if (!i?.fd) return call;
+  const tag = [i.fdClass, i.section].filter(Boolean).join(" ");
+  return tag ? `${call} · ${tag}` : call;
 }
 
 // --- Distribution of spots across the audio passband (the ~3 kHz window) ---
@@ -263,28 +294,45 @@ function addSpot(spot: Spot) {
   recordRate(Date.now(), spot.decodeTimeMs);
   renderRates();
 
+  // Same-grid stations stack on the square's center; spread them by a stable
+  // per-call offset so they're individually visible/clickable. Use the SAME
+  // jittered points for the node, its pulse, and the arc so everything lines up.
+  const txPos = spot.fromCall && spot.txLat != null && spot.txLon != null
+    ? spread(spot.fromCall, spot.txLat, spot.txLon, spot.txGrid) : null;
+  const toPos = spot.toCall && spot.toLat != null && spot.toLon != null
+    ? spread(spot.toCall, spot.toLat, spot.toLon, spot.toGrid) : null;
+
+  // In Field Day mode the map is FD-only: don't pulse/arc non-participants (their
+  // markers are hidden by applySectionFilter below).
+  const fdShow = (call: string | null) => !huntEnabled || (!!call && isFieldDay(call));
+
   // Nodes: transmitter colored by OUR receive strength; recipient + us placed too.
-  if (spot.fromCall && spot.txLat != null && spot.txLon != null) {
-    upsertStation(spot.fromCall, spot.txLat, spot.txLon, { ourSnr: spot.snr });
-    ping(spot.txLat, spot.txLon, spot.snr); // pulse = our reception of this station
+  if (spot.fromCall && txPos) {
+    upsertStation(spot.fromCall, txPos[0], txPos[1], { ourSnr: spot.snr });
+    if (fdShow(spot.fromCall)) ping(txPos[0], txPos[1], spot.snr); // pulse = our reception of this station
   }
-  if (spot.toCall && spot.toLat != null && spot.toLon != null)
-    upsertStation(spot.toCall, spot.toLat, spot.toLon, {});
+  if (spot.toCall && toPos) upsertStation(spot.toCall, toPos[0], toPos[1], {});
   if (spot.rxCall && spot.rxLat != null && spot.rxLon != null)
-    upsertStation(spot.rxCall, spot.rxLat, spot.rxLon, { isRx: true });
+    upsertStation(spot.rxCall, spot.rxLat, spot.rxLon, { isRx: true }); // us: stay exact
 
-  // Arc = the traffic BETWEEN the two QSO nodes (fromCall -> toCall), not back
-  // to us. Colored by the embedded report (the inter-node link SNR) when the
-  // message carries one, else a neutral link color.
-  if (spot.txLat != null && spot.txLon != null && spot.toLat != null && spot.toLon != null) {
+  // Arc = the traffic BETWEEN the two QSO nodes (fromCall -> toCall), not back to
+  // us. Colored by the embedded report (the inter-node link SNR) when present,
+  // else a neutral link color. A wide invisible hit-line sits on top so the thin
+  // arc is easy to click -> pin that pair's exchange.
+  if (txPos && toPos && spot.fromCall && spot.toCall && fdShow(spot.fromCall) && fdShow(spot.toCall)) {
+    const path = greatCircle([txPos[0], txPos[1]], [toPos[0], toPos[1]]);
     const color = spot.reportDb != null ? snrColor(spot.reportDb) : "#5fa8d3";
-    const line = L.polyline(greatCircle([spot.txLat, spot.txLon], [spot.toLat, spot.toLon]), {
-      color, weight: 1.6, opacity: 0.9,
-    }).addTo(arcLayer);
-    arcs.push({ line, created: Date.now() });
+    const line = L.polyline(path, { color, weight: 1.6, opacity: 0.9 }).addTo(arcLayer);
+    const hit = L.polyline(path, { color: "#000", weight: 10, opacity: 0 }).addTo(arcLayer);
+    const from = spot.fromCall, to = spot.toCall;
+    hit.on("click", (ev) => { L.DomEvent.stop(ev); activateExchangeForPair(from, to); });
+    // Single shared canvas: hit-test picks the topmost (last-drawn) layer, so push
+    // arcs to the back — a station pin always wins a click where they overlap.
+    line.bringToBack(); hit.bringToBack();
+    arcs.push({ line, hit, created: Date.now() });
   }
 
-  if (sectionState.size) applySectionFilter(); // keep new stations within the hunt filter
+  if (huntEnabled) applySectionFilter(); // keep new stations within the FD / hunt filter
 }
 
 // Fade + reap arcs.
@@ -292,13 +340,23 @@ setInterval(() => {
   const now = Date.now();
   for (let i = arcs.length - 1; i >= 0; i--) {
     const age = now - arcs[i].created;
-    if (age > ARC_TTL) { arcLayer.removeLayer(arcs[i].line); arcs.splice(i, 1); }
-    else arcs[i].line.setStyle({ opacity: 0.9 * (1 - age / ARC_TTL) });
+    if (age > ARC_TTL) {
+      arcLayer.removeLayer(arcs[i].line);
+      arcLayer.removeLayer(arcs[i].hit);
+      arcs.splice(i, 1);
+    } else arcs[i].line.setStyle({ opacity: 0.9 * (1 - age / ARC_TTL) });
   }
 }, 500);
 
 // --- Map focus: isolate a set of stations (dim the rest), with role labels. ---
 let focusActive = false;
+// Style for a non-focused station while a focus is active: faintly dimmed —
+// unless FD mode would hide it anyway, in which case keep it fully hidden so
+// focusing never resurrects filtered-out (non-FD) nodes.
+function dimStyle(call: string): L.PathOptions {
+  if (huntEnabled && call !== ourCall && !isFieldDay(call)) return { opacity: 0, fillOpacity: 0 };
+  return { opacity: 0.12, fillOpacity: 0.05 };
+}
 function focusCalls(targets: { call: string; role: string; color: string }[]) {
   clearFocus();
   focusActive = true;
@@ -306,7 +364,7 @@ function focusCalls(targets: { call: string; role: string; color: string }[]) {
   if (map.hasLayer(pingLayer)) map.removeLayer(pingLayer);
   const keep = new Set(targets.map((t) => t.call));
   stations.forEach((s, call) =>
-    s.marker.setStyle(keep.has(call) ? { opacity: 1, fillOpacity: 1 } : { opacity: 0.12, fillOpacity: 0.05 }));
+    s.marker.setStyle(keep.has(call) ? { opacity: 1, fillOpacity: 1 } : dimStyle(call)));
   for (const t of targets) {
     const s = stations.get(t.call);
     if (!s) continue;
@@ -341,6 +399,7 @@ function wsjtxHighlight(call: string | null) {
 interface SInfo {
   spots: number; lastSnr: number; minSnr: number; maxSnr: number; sumSnr: number;
   grid: string | null; section: string | null; fdClass: string | null; located: boolean;
+  fd: boolean; // sticky: has this station ever *advertised* Field Day?
   lastDf: number; band: string | null; lastSeen: number;
 }
 const stationInfo = new Map<string, SInfo>();
@@ -348,7 +407,7 @@ function noteStation(spot: Spot) {
   if (!spot.fromCall) return;
   let i = stationInfo.get(spot.fromCall);
   if (!i) {
-    i = { spots: 0, lastSnr: spot.snr, minSnr: 99, maxSnr: -99, sumSnr: 0, grid: null, section: null, fdClass: null, located: false, lastDf: spot.audioDf, band: spot.band, lastSeen: 0 };
+    i = { spots: 0, lastSnr: spot.snr, minSnr: 99, maxSnr: -99, sumSnr: 0, grid: null, section: null, fdClass: null, located: false, fd: false, lastDf: spot.audioDf, band: spot.band, lastSeen: 0 };
     stationInfo.set(spot.fromCall, i);
   }
   i.spots++;
@@ -358,6 +417,11 @@ function noteStation(spot: Spot) {
   if (spot.txGrid) i.grid = spot.txGrid;
   if (spot.section) i.section = spot.section;
   if (spot.fdClass) i.fdClass = spot.fdClass;
+  // Advertised Field Day: CQ FD, or a parsed class token (every real FD exchange
+  // carries class+section together, so fdClass catches the exchange too). NOT
+  // msgType "exchange" — the parser's catch-all tags any unrecognized directed
+  // message that way, which would misclassify ordinary traffic as Field Day.
+  if (spot.cqModifier === "FD" || spot.fdClass) i.fd = true;
   if (spot.txLat != null) i.located = true;
 }
 
@@ -407,7 +471,9 @@ function ring(call: string, color: string, role: string, radius = 11, weight = 2
 // --- Live exchanges: active QSOs between other stations, polled from backend ---
 interface Exchange {
   cqer: string; responder: string; cqerClass: string | null; responderClass: string | null;
-  role: string; stage: string; stageRank: number; seenSteps: boolean[]; msgCount: number;
+  cqerSection: string | null; responderSection: string | null;
+  role: string; protocol: "ft8" | "fieldday"; steps: string[];
+  stage: string; stageRank: number; seenSteps: boolean[]; msgCount: number;
   cqerHeardResponder: number | null; responderHeardCqer: number | null;
   retransmissions: number; contenders: number; contenderCalls: string[];
   halfCopy: boolean; lastSeen: string; band: string | null;
@@ -426,18 +492,18 @@ const EX_ROLE = {
   calling: { color: "#94a3b8", icon: "⏳", label: "calling — no reply" }, // contenders, neutral
 } as const;
 
-// 6-segment QSO progress bar. Steps we copied are filled; steps within the
-// progressed range that we MISSED are holes; later steps are empty.
-const STAGE_STEPS = ["CQ", "grid", "report", "roger", "RR73", "73"];
-function progressBar(seen: boolean[], rank: number): string {
+// QSO progress bar. One segment per protocol step (6 for FT8, 4 for Field Day);
+// steps we copied are filled, steps within the progressed range that we MISSED
+// are holes, later steps are empty. The step labels are the segment tooltips.
+function progressBar(seen: boolean[], rank: number, steps: string[]): string {
   let holes = 0;
-  const cells = STAGE_STEPS.map((_, i) => {
-    if (seen?.[i]) return `<i class="on"></i>`;
-    if (i < rank) { holes++; return `<i class="hole"></i>`; }
-    return `<i></i>`;
+  const cells = steps.map((label, i) => {
+    if (seen?.[i]) return `<i class="on" title="${label} · copied"></i>`;
+    if (i < rank) { holes++; return `<i class="hole" title="${label} · missed"></i>`; }
+    return `<i title="${label}"></i>`;
   }).join("");
   const got = seen?.filter(Boolean).length ?? 0;
-  return `<span class="exprog" title="copied ${got}/6 · ${holes} hole${holes === 1 ? "" : "s"}">${cells}</span>`;
+  return `<span class="exprog" title="copied ${got}/${steps.length} · ${holes} hole${holes === 1 ? "" : "s"}">${cells}</span>`;
 }
 // dB value colored by the SNR scale.
 const snrCell = (v: number | null) => (v != null ? `<b style="color:${snrColor(v)}">${v} dB</b>` : "<b>—</b>");
@@ -447,13 +513,16 @@ function fdBadge(cls: string | null): string {
   const d = decodeFdClass(cls);
   return d ? ` <span class="fdcls" title="${d.transmitters} tx · ${d.meaning}">${d.raw}</span>` : "";
 }
+// Class + ARRL section tags for a Field Day station — the at-a-glance exchange.
+function fdTag(cls: string | null, section: string | null): string {
+  const sec = section ? ` <span class="fdsec" title="ARRL section ${section}">${section}</span>` : "";
+  return fdBadge(cls) + sec;
+}
 
 async function refreshExchanges() {
   try {
     const all: Exchange[] = await fetch("/api/exchanges").then((r) => r.json());
-    const ex = huntEnabled
-      ? all.filter((e) => isFieldDay(e.cqer) || isFieldDay(e.responder) || e.cqerClass || e.responderClass)
-      : all;
+    const ex = huntEnabled ? all.filter((e) => e.protocol === "fieldday") : all;
     currentExchanges = ex;
     el("exCount").textContent = String(ex.length);
     const list = el("exList");
@@ -466,8 +535,8 @@ async function refreshExchanges() {
       const party = (call: string, r: typeof EX_ROLE.cq) =>
         `<span class="ex-party-call" style="color:${r.color}" title="${r.label}"><span class="ex-ic">${r.icon}</span><b data-call="${call}">${call}</b></span>`;
       return `<div class="exrow${selected ? " selected" : ""}" data-cqer="${e.cqer}" data-resp="${e.responder}" data-cont="${e.contenderCalls.join(" ")}">
-        <div class="exrow-top"><span class="ex-pair">${party(e.cqer, EX_ROLE.cq)}${fdBadge(e.cqerClass)}<span class="swap">⇄</span>${party(e.responder, EX_ROLE.worked)}${fdBadge(e.responderClass)}</span>${pileup}</div>
-        <div class="exrow-stage">${progressBar(e.seenSteps, e.stageRank)}<span class="exstage">${e.stage}</span>${flags}</div>
+        <div class="exrow-top"><span class="ex-pair">${party(e.cqer, EX_ROLE.cq)}${fdTag(e.cqerClass, e.cqerSection)}<span class="swap">⇄</span>${party(e.responder, EX_ROLE.worked)}${fdTag(e.responderClass, e.responderSection)}</span>${pileup}</div>
+        <div class="exrow-stage">${e.protocol === "fieldday" ? '<span class="exproto" title="Field Day exchange (class + section)">FD</span>' : ""}${progressBar(e.seenSteps, e.stageRank, e.steps)}<span class="exstage">${e.stage}</span>${flags}</div>
         <div class="exrow-snr">
           <span>${e.cqer} hears ${e.responder}: ${snrCell(e.cqerHeardResponder)}</span>
           <span>${e.responder} hears ${e.cqer}: ${snrCell(e.responderHeardCqer)}</span>
@@ -492,7 +561,7 @@ function focusExchange(e: Exchange) {
   if (map.hasLayer(pingLayer)) map.removeLayer(pingLayer);
   const contenders = e.contenderCalls.filter((c) => c !== e.responder && c !== e.cqer);
   const keep = new Set([e.cqer, e.responder, ...contenders]);
-  stations.forEach((s, call) => s.marker.setStyle(keep.has(call) ? { opacity: 1, fillOpacity: 1 } : { opacity: 0.1, fillOpacity: 0.04 }));
+  stations.forEach((s, call) => s.marker.setStyle(keep.has(call) ? { opacity: 1, fillOpacity: 1 } : dimStyle(call)));
 
   const at = (call: string) => stations.get(call)?.marker.getLatLng() ?? null;
   const cqLL = at(e.cqer), rLL = at(e.responder);
@@ -525,16 +594,18 @@ let prevView: { center: L.LatLng; zoom: number } | null = null; // map view to r
 const exdetail = document.getElementById("exdetail") as HTMLDivElement;
 
 // One uniform card per party — located or not — dumping everything we know.
-function partyCard(call: string, role: string, roleColor: string, cls: string | null): string {
+function partyCard(call: string, role: string, roleColor: string, cls: string | null, section: string | null = null): string {
   const i = stationInfo.get(call);
   const located = !!i?.located;
   const loc = located ? (i!.grid ?? i!.section ?? "?") : `<span class="exd-noloc-tag">⚠ no grid copied</span>`;
   const fd = decodeFdClass(cls);
   const snr = i && i.spots > 0 ? `${i.lastSnr} dB (${i.minSnr}…${i.maxSnr})` : "not directly copied";
+  const grid = i?.grid ?? "";
   return `<div class="exd-party ${located ? "" : "exd-noloc"}">
-    <div class="exd-party-top"><b style="color:${roleColor}">${call}</b><span class="exd-role">${role}</span></div>
+    <div class="exd-party-top"><b style="color:${roleColor}">${call}</b><span class="exd-party-actions">${role ? `<span class="exd-role">${role}</span>` : ""}<button class="queue-btn" data-queue="${call}" data-grid="${grid}" title="queue ${call} in WSJT-X — sets up the call; then press Enable Tx">📻 queue</button></span></div>
     <div class="exd-party-row"><span>location</span><b>${loc}</b></div>
     ${fd ? `<div class="exd-party-row"><span>class</span><b title="${fd.meaning}">${fd.raw} · ${fd.transmitters}tx</b></div>` : ""}
+    ${section ? `<div class="exd-party-row"><span>section</span><b>${section}</b></div>` : ""}
     <div class="exd-party-row"><span>rx snr</span><b>${snr}</b></div>
     <div class="exd-party-row"><span>spots</span><b>${i?.spots ?? 0}</b></div>
   </div>`;
@@ -545,14 +616,14 @@ function showExchangeDetail(e: Exchange) {
   const holes = e.seenSteps.filter((s, i) => !s && i < e.stageRank).length;
   const contenders = e.contenderCalls.filter((c) => c !== e.responder && c !== e.cqer);
   el("exdBody").innerHTML = `
-    <div class="exd-stage">${progressBar(e.seenSteps, e.stageRank)}<b>${e.stage}</b></div>
+    <div class="exd-stage">${e.protocol === "fieldday" ? '<span class="exproto" title="Field Day exchange (class + section)">FD</span>' : ""}${progressBar(e.seenSteps, e.stageRank, e.steps)}<b>${e.stage}</b></div>
     <div class="exd-snr">${e.msgCount} msgs · ${holes} hole${holes === 1 ? "" : "s"}${e.halfCopy ? " · ½ copy" : ""}${e.retransmissions ? ` · ↻ ${e.retransmissions} retx` : ""}${e.band ? ` · ${e.band}` : ""}</div>
     <div class="exd-snr">
       <div>${e.cqer} hears ${e.responder}: ${snrCell(e.cqerHeardResponder)}</div>
       <div>${e.responder} hears ${e.cqer}: ${snrCell(e.responderHeardCqer)}</div>
     </div>
-    ${partyCard(e.cqer, `${EX_ROLE.cq.icon} ${e.role === "cq" ? "CQ" : "called"}`, EX_ROLE.cq.color, e.cqerClass)}
-    ${partyCard(e.responder, `${EX_ROLE.worked.icon} worked`, EX_ROLE.worked.color, e.responderClass)}
+    ${partyCard(e.cqer, `${EX_ROLE.cq.icon} ${e.role === "cq" ? "CQ" : "called"}`, EX_ROLE.cq.color, e.cqerClass, e.cqerSection)}
+    ${partyCard(e.responder, `${EX_ROLE.worked.icon} worked`, EX_ROLE.worked.color, e.responderClass, e.responderSection)}
     ${contenders.length ? `<div class="exd-sub">still calling — no reply (${contenders.length})</div>${contenders.map((c) => partyCard(c, `${EX_ROLE.calling.icon} calling`, EX_ROLE.calling.color, null)).join("")}` : ""}
     <div class="exd-sub">event log · our copy</div>
     <div class="exd-log">${e.log.map((l) => {
@@ -585,13 +656,6 @@ interface HistGroup { partner: string; count: number; first: number; last: numbe
 function showStationHistory(call: string, history: Spot[]) {
   el("stnTitle").textContent = call;
   const i = stationInfo.get(call);
-  const fd = decodeFdClass(i?.fdClass ?? null);
-  const bits = [
-    i?.located ? (i.grid ?? i.section) : (i?.section ?? "⚠ no grid copied"),
-    i ? `${i.spots} spots` : null,
-    i ? `last ${i.lastSnr}dB (${i.minSnr}…${i.maxSnr})` : null,
-    fd ? fd.raw : null,
-  ].filter(Boolean).join(" · ");
 
   // Collapse by who they were working: count, time span, avg SNR (ours + reported).
   const groups = new Map<string, HistGroup>();
@@ -616,7 +680,12 @@ function showStationHistory(call: string, history: Spot[]) {
       <div class="stn-grp-meta">saw ${cell(avg(g.saw))} · rprt ${cell(avg(g.rep))} · ${span}</div>
     </div>`;
   }).join("");
-  el("stnBody").innerHTML = `<div class="exd-snr">${bits}</div><div class="exd-sub">talking to · ${groups.size} (${history.length} msgs)</div>${rows}`;
+  // The station's own exchange card pinned at the top (with the queue action),
+  // then the scrollable "talking to" history below.
+  el("stnBody").innerHTML =
+    partyCard(call, "", "var(--accent)", i?.fdClass ?? null, i?.section ?? null)
+    + `<div class="exd-sub">talking to · ${groups.size} (${history.length} msgs)</div>`
+    + `<div class="stn-talking">${rows}</div>`;
   stnhist.hidden = false;
 }
 async function openStationHistory(call: string) {
@@ -677,14 +746,11 @@ exListEl.addEventListener("mouseover", (ev) => {
 exListEl.addEventListener("mousemove", (ev) => { if (!pinnedKey) placeCard(ev as MouseEvent); });
 exListEl.addEventListener("mouseleave", () => { lastExHover = ""; refocusPinned(); hideCard(); bandHighlight(null); wsjtxHighlight(null); });
 
-// Click an exchange -> pin the detail view + fly the map to frame all parties.
-exListEl.addEventListener("click", (ev) => {
-  const row = (ev.target as HTMLElement).closest(".exrow") as HTMLElement | null;
-  if (!row) return;
-  const e = currentExchanges.find((x) => x.cqer === row.dataset.cqer && x.responder === row.dataset.resp);
-  if (!e) return;
+// Pin an exchange: selected cue + detail panel + frame all parties on the map.
+// Shared by the list-row click and the map-arc click.
+function pinExchange(e: Exchange) {
   const key = `${e.cqer}|${e.responder}`;
-  if (pinnedKey === key) { closeDetail(); return; } // click the pinned row again to exit
+  if (pinnedKey === key) { closeDetail(); return; } // toggle: click the pinned one again to exit
   if (!pinnedKey) prevView = { center: map.getCenter(), zoom: map.getZoom() }; // remember where to return
   pinnedKey = key;
   markExSelected(key);
@@ -702,12 +768,31 @@ exListEl.addEventListener("click", (ev) => {
     // only one node located -> keep current zoom, just pan to it
     map.panTo(pts[0], { animate: true, duration: 0.8 });
   } // none located -> leave the view untouched
+}
+
+// Click a map arc -> pin the live exchange for that from/to pair (the winner link
+// if it's the chosen pair, else a contender calling the cqer). No-op if the pair
+// isn't part of a current exchange (e.g. an aged-out arc).
+function activateExchangeForPair(a: string, b: string) {
+  const pair = (e: Exchange) => (e.cqer === a && e.responder === b) || (e.cqer === b && e.responder === a);
+  const contender = (e: Exchange) =>
+    (e.cqer === a && e.contenderCalls.includes(b)) || (e.cqer === b && e.contenderCalls.includes(a));
+  const e = currentExchanges.find(pair) ?? currentExchanges.find(contender);
+  if (e) pinExchange(e);
+}
+
+// Click an exchange row -> pin it.
+exListEl.addEventListener("click", (ev) => {
+  const row = (ev.target as HTMLElement).closest(".exrow") as HTMLElement | null;
+  if (!row) return;
+  const e = currentExchanges.find((x) => x.cqer === row.dataset.cqer && x.responder === row.dataset.resp);
+  if (e) pinExchange(e);
 });
 
 // --- CQ callers: stations calling CQ, gone once they engage. Sort age/dist/snr. ---
 interface CqCaller {
   call: string; snr: number; distanceKm: number | null; grid: string | null;
-  section: string | null; band: string | null; lastSeen: string; cqCount: number;
+  section: string | null; fdClass: string | null; fd: boolean; band: string | null; lastSeen: string; cqCount: number;
   qsosLastHour: number; activeness: number; workedAt: number | null;
 }
 let cqCallers: CqCaller[] = [];
@@ -802,6 +887,26 @@ el("cqcallList").addEventListener("click", async (e) => {
     const r = await fetch("/api/dx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ call, grid }) }).then((res) => res.json());
     toast(r.ok ? `✓ working ${call} — auto-sequence engaged` : `✗ ${r.hint ?? r.error}`, !!r.ok);
   } catch { toast("✗ failed", false); }
+});
+
+// "Queue" any station (CQ or not) — point WSJT-X at it via /api/dx (Configure +
+// generateMessages), so the op just presses Enable Tx. Works from the station
+// dialog and the exchange party tiles via the embedded queue button.
+async function queueStation(call: string, grid: string | null) {
+  toast(`→ queueing ${call} in WSJT-X…`);
+  try {
+    const r = await fetch("/api/dx", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ call, grid: grid ?? "" }),
+    }).then((res) => res.json());
+    toast(r.ok ? `✓ ${call} queued — press Enable Tx in WSJT-X` : `✗ ${r.hint ?? r.error}`, !!r.ok);
+  } catch { toast("✗ queue failed", false); }
+}
+document.addEventListener("click", (ev) => {
+  const qb = (ev.target as HTMLElement).closest("[data-queue]") as HTMLElement | null;
+  if (!qb) return;
+  ev.stopPropagation();
+  queueStation(qb.dataset.queue!, qb.dataset.grid || null);
 });
 
 function exitMyQso() {
@@ -1018,7 +1123,7 @@ function renderCq() {
     // Hunt on: drop non-FD + muted sections (highlighted floated to top below).
     if (huntEnabled) {
       if (sectionState.get(secOf(c)) === "hide") return false;
-      if (!(c.section || isFieldDay(c.call))) return false;
+      if (!c.fd && !isFieldDay(c.call)) return false; // backend OR live-stream says FD
     }
     return true;
   });
@@ -1034,17 +1139,23 @@ function renderCq() {
   el("cqList").innerHTML = sorted.map((c) => {
     const hi = huntEnabled && sectionState.get(secOf(c)) === "highlight";
     const age = (now - Date.parse(c.lastSeen)) / 1000;
-    const op = hi ? "1" : Math.max(0.55, 1 - age / 120).toFixed(2); // gentle staleness fade; highlighted stays bright
+    // Staleness fade is applied per-text-element, NOT on the chip — a faded parent
+    // clamps child opacity, which was greying out the (otherwise high-contrast) badge.
+    const op = hi ? "1" : Math.max(0.72, 1 - age / 120).toFixed(2);
     const dist = c.distanceKm != null ? `${c.distanceKm.toLocaleString()}km` : "—";
     const where = c.grid ?? c.section ?? "?";
     const a = c.activeness;
     const actClass = a >= 70 ? "running hard" : a >= 40 ? "active" : a >= 15 ? "poking around" : "quiet";
     const actColor = `hsl(${Math.round((a / 100) * 120)}, 70%, 48%)`; // red(idle) -> green(running)
-    return `<div class="cqchip${hi ? " hi" : ""}" data-call="${c.call}" style="opacity:${op}" title="${c.call} · ${where} · activeness ${a}/100 (${actClass}) · ${c.qsosLastHour} QSO last hr · ${c.cqCount}× CQ · ${Math.round(age)}s ago · click → call in WSJT-X">
-      <b>${c.call}</b>
-      <span style="color:${snrColor(c.snr)}">${c.snr}dB</span>
-      <span style="color:${distanceColor(c.distanceKm)}">${dist}</span>
-      <span class="cq-act"><i style="width:${a}%;background:${actColor}"></i></span>
+    // Known class/section -> their pills; a CQ-FD caller whose section we haven't
+    // copied yet -> a "?" pill so it's clear why it's listed.
+    const fdMark = (c.fdClass || c.section) ? fdTag(c.fdClass, c.section)
+      : c.fd ? ` <span class="fdsec" title="advertising Field Day — section not copied yet">?</span>` : "";
+    return `<div class="cqchip${hi ? " hi" : ""}" data-call="${c.call}" title="${c.call} · ${where} · activeness ${a}/100 (${actClass}) · ${c.qsosLastHour} QSO last hr · ${c.cqCount}× CQ · ${Math.round(age)}s ago · click → call in WSJT-X">
+      <b style="opacity:${op}">${c.call}</b>${fdMark}
+      <span style="opacity:${op};color:${snrColor(c.snr)}">${c.snr}dB</span>
+      <span style="opacity:${op};color:${distanceColor(c.distanceKm)}">${dist}</span>
+      <span class="cq-act" style="opacity:${op}"><i style="width:${a}%;background:${actColor}"></i></span>
     </div>`;
   }).join("");
 }
@@ -1105,6 +1216,7 @@ cqListEl.addEventListener("click", async (ev) => {
   const chip = (ev.target as HTMLElement).closest(".cqchip") as HTMLElement | null;
   if (!chip?.dataset.call) return;
   const call = chip.dataset.call;
+  openStationHistory(call); // also surface their card + history widget
   toast(`→ WSJT-X: calling ${call}…`);
   try {
     const r = await fetch("/api/call", {
@@ -1164,10 +1276,11 @@ interface SectionStat {
 }
 let sectionStats: SectionStat[] = [];
 
-// A station is "Field Day" if we've copied a section or a class from it.
+// A station is "Field Day" only if it *advertised* it — CQ FD, a class, or a
+// class+section exchange (tracked sticky in noteStation). A section pulled from a
+// callbook doesn't make a station a Field Day participant.
 function isFieldDay(call: string): boolean {
-  const i = stationInfo.get(call);
-  return !!(i && (i.section || i.fdClass));
+  return !!stationInfo.get(call)?.fd;
 }
 
 // Station-marker visibility. Hunt off = everyone normal. Hunt on = non-FD
@@ -1177,6 +1290,7 @@ function applySectionFilter() {
   if (!huntEnabled) { stations.forEach((s) => s.marker.setStyle({ opacity: 1, fillOpacity: 0.8 })); return; }
   const anyHi = [...sectionState.values()].includes("highlight");
   stations.forEach((s, call) => {
+    if (call === ourCall) { s.marker.setStyle({ opacity: 1, fillOpacity: 0.9 }); return; } // always show ourselves
     const sec = stationInfo.get(call)?.section ?? null;
     const st = sec ? sectionState.get(sec) : undefined;
     if (st === "hide") s.marker.setStyle({ opacity: 0, fillOpacity: 0 });
@@ -1190,7 +1304,7 @@ function applySectionFilter() {
 function renderHunt() {
   if (!huntEnabled) {
     el("huntCount").textContent = "—";
-    el("huntList").innerHTML = `<div class="hunt-off">enable to list sections &amp; filter the UI to Field Day</div>`;
+    el("huntList").innerHTML = `<div class="hunt-off">turn on Field Day mode (top) to list sections &amp; filter the UI</div>`;
     return;
   }
   el("huntCount").textContent = String(sectionStats.length);
@@ -1242,6 +1356,7 @@ document.querySelector(".hunt-actions")?.addEventListener("click", (ev) => {
 });
 (document.getElementById("huntEnable") as HTMLInputElement).addEventListener("change", (ev) => {
   huntEnabled = (ev.target as HTMLInputElement).checked;
+  document.body.classList.toggle("fd-mode", huntEnabled); // global accent: whole UI is filtered
   renderHunt();
   applySectionFilter();
   renderCq();
@@ -1278,6 +1393,7 @@ function autoConsider(spot: Spot) {
   if (myState.txEnabled || myState.transmitting) return; // never chase a new CQ mid-QSO
   if (spot.msgType !== "cq" || !spot.fromCall) return;
   if (Date.now() < autoCooldownUntil) return;
+  if (!isFieldDay(spot.fromCall)) return; // only stations advertising Field Day
   const sec = stationInfo.get(spot.fromCall)?.section ?? null;
   if (!sec || sectionState.get(sec) !== "highlight") return; // only highlighted sections
   if (workedAt.has(spot.fromCall)) return; // already worked

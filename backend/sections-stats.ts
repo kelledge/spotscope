@@ -9,12 +9,28 @@ import { haversineKm } from "./geo/distance.ts";
 
 const COMPLETION = new Set(["rr73", "rrr", "73"]);
 
+// A transmission *advertises* Field Day if it carried a CQ FD modifier or a parsed
+// class token (every real FD exchange sends class+section together, so fdClass
+// catches the exchange too). We deliberately do NOT trust msgType "exchange" — the
+// parser's catch-all tags any unrecognized directed message that way — nor a bare
+// `section`, which may be a callbook lookup. (Same test as computeExchanges.)
+const advertisesFd = (s: Spot) =>
+  s.cqModifier === "FD" || s.fdClass != null;
+
 export function computeSectionStats(spots: Spot[]): SectionStat[] {
+  // Only stations that advertised Field Day belong in the hunt — everyone else is
+  // a distraction. A station stays "FD" once it's advertised, so a later closing
+  // handshake (which carries no class/section) still counts as worked.
+  const fdCalls = new Set<string>();
+  for (const s of spots) {
+    if (s.fromCall && advertisesFd(s)) fdCalls.add(s.fromCall);
+  }
+
   // Build callsign -> section (sections only appear in contest exchanges, not in
   // the closing handshake, so we accumulate it from any message that carried one).
   const callSection = new Map<string, string>();
   for (const s of spots) {
-    if (s.fromCall && s.section) callSection.set(s.fromCall, s.section);
+    if (s.fromCall && s.section && fdCalls.has(s.fromCall)) callSection.set(s.fromCall, s.section);
   }
   const rxCall = [...spots].reverse().find((s) => s.rxCall)?.rxCall ?? null;
 
@@ -27,7 +43,7 @@ export function computeSectionStats(spots: Spot[]): SectionStat[] {
   };
 
   for (const s of spots) {
-    if (!s.fromCall) continue;
+    if (!s.fromCall || !fdCalls.has(s.fromCall)) continue;
     const sec = s.section ?? callSection.get(s.fromCall);
     if (!sec) continue;
     const a = get(sec);

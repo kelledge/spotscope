@@ -20,10 +20,19 @@ interface HourStat {
 // activeness / completed-QSO stats.
 export function computeCqCallers(recent: Spot[], hour: Spot[] = recent, worked: Map<string, number> = new Map()): CqCaller[] {
   const hourStat = new Map<string, HourStat>();
-  const callSection = new Map<string, string>(); // accumulated section (CQs only carry a grid)
+  // Field Day identity the caller *advertised* (CQs carry only a grid, so these come
+  // from exchanges they sent earlier in the window). A bare section may be a callbook
+  // lookup, so only trust one that rode in on an actual exchange.
+  const callSection = new Map<string, string>();
+  const callClass = new Map<string, string>();
+  const fdCalls = new Set<string>(); // advertised Field Day: CQ FD or a parsed class
   for (const s of hour) {
     if (!s.fromCall) continue;
-    if (s.section) callSection.set(s.fromCall, s.section);
+    if (s.cqModifier === "FD" || s.fdClass) fdCalls.add(s.fromCall);
+    // Real FD exchanges send class + section in the same message, so only trust a
+    // section that arrived alongside a class — never a bare (possibly callbook) one.
+    if (s.fdClass && s.section) callSection.set(s.fromCall, s.section);
+    if (s.fdClass) callClass.set(s.fromCall, s.fdClass);
     const t = Date.parse(s.receivedAt);
     let h = hourStat.get(s.fromCall);
     if (!h) { h = { cycles: new Set(), first: t, last: t, partners: new Set(), completed: new Set() }; hourStat.set(s.fromCall, h); }
@@ -82,7 +91,9 @@ export function computeCqCallers(recent: Spot[], hour: Spot[] = recent, worked: 
       ? Math.round(haversineKm({ lat: s.rxLat, lon: s.rxLon }, { lat: s.txLat, lon: s.txLon }))
       : null;
     out.push({
-      call, snr: s.snr, distanceKm: dist, grid: s.txGrid, section: callSection.get(call) ?? s.section,
+      call, snr: s.snr, distanceKm: dist, grid: s.txGrid,
+      section: callSection.get(call) ?? null, fdClass: callClass.get(call) ?? null,
+      fd: fdCalls.has(call),
       band: s.band, lastSeen: s.receivedAt, cqCount: cqCount.get(call) ?? 1,
       qsosLastHour: hourStat.get(call)?.completed.size ?? 0,
       activeness: activenessOf(call),
