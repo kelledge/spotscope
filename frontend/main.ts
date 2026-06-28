@@ -280,6 +280,11 @@ function addSpot(spot: Spot) {
     dxStolen(spot.toCall);
   }
   autoConsider(spot); // auto-hunt: maybe queue this CQ
+  // Watch-next-CQ: the armed target just called CQ -> alert + pre-stage. Small
+  // delay so a CQ already on screen at arm time doesn't trip it immediately.
+  if (watchTarget && spot.fromCall === watchTarget && spot.msgType === "cq" && Date.now() - watchArmedAt > 1200) {
+    fireWatch(watchTarget);
+  }
   el("count").textContent = String(spotCount);
   if (spot.rxCall) el("rx").textContent = `${spot.rxCall}${spot.rxGrid ? " / " + spot.rxGrid : ""}`;
   if (spot.band) {
@@ -536,7 +541,7 @@ async function refreshExchanges() {
       const party = (call: string, r: typeof EX_ROLE.cq) =>
         `<span class="ex-party-call" style="color:${r.color}" title="${r.label}"><span class="ex-ic">${r.icon}</span><b data-call="${call}">${call}</b></span>`;
       return `<div class="exrow${selected ? " selected" : ""}" data-cqer="${e.cqer}" data-resp="${e.responder}" data-cont="${e.contenderCalls.join(" ")}">
-        <div class="exrow-top"><span class="ex-pair">${party(e.cqer, EX_ROLE.cq)}${fdTag(e.cqerClass, e.cqerSection)}<span class="swap">⇄</span>${party(e.responder, EX_ROLE.worked)}${fdTag(e.responderClass, e.responderSection)}</span>${pileup}</div>
+        <div class="exrow-top"><span class="ex-pair">${party(e.cqer, EX_ROLE.cq)}${fdTag(e.cqerClass, e.cqerSection)}<button class="watch-mini ${watchTarget === e.cqer ? "on" : ""}" data-watch="${e.cqer}" title="watch ${e.cqer} — alert on its next CQ">👁</button><span class="swap">⇄</span>${party(e.responder, EX_ROLE.worked)}${fdTag(e.responderClass, e.responderSection)}</span>${pileup}</div>
         <div class="exrow-stage">${e.protocol === "fieldday" ? '<span class="exproto" title="Field Day exchange (class + section)">FD</span>' : ""}${progressBar(e.seenSteps, e.stageRank, e.steps)}<span class="exstage">${e.stage}</span>${flags}</div>
         <div class="exrow-snr">
           <span>${e.cqer} hears ${e.responder}: ${snrCell(e.cqerHeardResponder)}</span>
@@ -603,7 +608,7 @@ function partyCard(call: string, role: string, roleColor: string, cls: string | 
   const snr = i && i.spots > 0 ? `${i.lastSnr} dB (${i.minSnr}…${i.maxSnr})` : "not directly copied";
   const grid = i?.grid ?? "";
   return `<div class="exd-party ${located ? "" : "exd-noloc"}">
-    <div class="exd-party-top"><b style="color:${roleColor}">${call}</b><span class="exd-party-actions">${role ? `<span class="exd-role">${role}</span>` : ""}<button class="queue-btn" data-queue="${call}" data-grid="${grid}" title="queue ${call} in WSJT-X — sets up the call; then press Enable Tx">📻 queue</button></span></div>
+    <div class="exd-party-top"><b class="exd-party-name" data-station="${call}" style="color:${roleColor}" title="open ${call}'s station view">${call}</b><span class="exd-party-actions">${role ? `<span class="exd-role">${role}</span>` : ""}<button class="watch-btn ${watchTarget === call ? "on" : ""}" data-watch="${call}" title="watch ${call} — alert + pre-stage a reply when they next call CQ">👁 watch</button><button class="queue-btn" data-queue="${call}" data-grid="${grid}" title="queue ${call} in WSJT-X — sets up the call; then press Enable Tx">📻 queue</button></span></div>
     <div class="exd-party-row"><span>location</span><b>${loc}</b></div>
     ${fd ? `<div class="exd-party-row"><span>class</span><b title="${fd.meaning}">${fd.raw} · ${fd.transmitters}tx</b></div>` : ""}
     ${section ? `<div class="exd-party-row"><span>section</span><b>${section}</b></div>` : ""}
@@ -876,7 +881,12 @@ function bearing(a: { lat: number; lon: number }, b: { lat: number; lon: number 
 }
 
 function setMyState(s: MyState) {
+  const prevDx = myState.dxCall;
   myState = s;
+  // WSJT-X has no "double-click" event, but double-clicking a decode sets the DX
+  // Call, which rides in on Status. When it changes to a new station, surface that
+  // station's detailed viewer (covers both an op double-click and our own /api/dx).
+  if (s.dxCall && s.dxCall !== prevDx) openStationHistory(s.dxCall);
   const isCq = /^CQ\b/i.test((s.txMessage ?? "").trim()) && !s.dxCall;
   const tx = document.getElementById("txstate");
   if (tx) {
@@ -941,11 +951,55 @@ async function queueStation(call: string, grid: string | null) {
     toast(r.ok ? `✓ ${call} queued — press Enable Tx in WSJT-X` : `✗ ${r.hint ?? r.error}`, !!r.ok);
   } catch { toast("✗ queue failed", false); }
 }
+// --- "Watch next CQ": arm a hunt on one station; the moment it next calls CQ,
+// ding, pulse the map, and pre-stage a reply (so the op just presses Enable Tx).
+// Two ways in: a station's card (workflow 1 — a targeted station) or an exchange's
+// cqer (workflow 2 — jump on the runner's next CQ). Single target, one-shot. ---
+let watchTarget: string | null = null;
+let watchArmedAt = 0;
+function setWatch(call: string | null) {
+  watchTarget = call;
+  watchArmedAt = Date.now();
+  if (call) toast(`👁 watching ${call} — will alert on its next CQ`, true);
+  else clearAutoTarget();
+  renderWatchBanner();
+  refreshExchanges(); // reflect the watch badge in the exchange list
+}
+function toggleWatch(call: string) { setWatch(watchTarget === call ? null : call); }
+function renderWatchBanner() {
+  const b = el("watchBanner");
+  if (!watchTarget) { b.hidden = true; b.innerHTML = ""; return; }
+  b.hidden = false;
+  b.innerHTML = `<span>👁 watching <b>${watchTarget}</b> — jumping on next CQ</span><button id="watchCancel" title="stop watching">×</button>`;
+}
+function fireWatch(call: string) {
+  ding();
+  openStationHistory(call); // select + highlight + open the viewer, just like a click
+  if (myState.txEnabled || myState.transmitting) {
+    toast(`🎯 ${call} is calling CQ — finish your QSO to jump in`, false);
+    return; // stay armed: we couldn't act, catch their next CQ
+  }
+  toast(`🎯 ${call} calling CQ — pre-staging reply…`, true);
+  fetch("/api/call", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ call }) })
+    .then((r) => r.json())
+    .then((r) => toast(r.ok ? `✓ ${call} queued — press Enable Tx` : `✗ ${r.hint ?? r.error}`, !!r.ok))
+    .catch(() => toast("✗ pre-stage failed", false));
+  setWatch(null); // one-shot: "next CQ" fulfilled
+}
+el("watchBanner").addEventListener("click", (ev) => {
+  if ((ev.target as HTMLElement).closest("#watchCancel")) setWatch(null);
+});
+
 document.addEventListener("click", (ev) => {
-  const qb = (ev.target as HTMLElement).closest("[data-queue]") as HTMLElement | null;
-  if (!qb) return;
-  ev.stopPropagation();
-  queueStation(qb.dataset.queue!, qb.dataset.grid || null);
+  const t = ev.target as HTMLElement;
+  const qb = t.closest("[data-queue]") as HTMLElement | null;
+  if (qb) { ev.stopPropagation(); queueStation(qb.dataset.queue!, qb.dataset.grid || null); return; }
+  const wb = t.closest("[data-watch]") as HTMLElement | null;
+  if (wb?.dataset.watch) { ev.stopPropagation(); toggleWatch(wb.dataset.watch); return; }
+  // Clicking a callsign in a card opens its station view (which closes the
+  // exchange viewer and highlights the node on the map).
+  const nm = t.closest("[data-station]") as HTMLElement | null;
+  if (nm?.dataset.station) { ev.stopPropagation(); openStationHistory(nm.dataset.station); }
 });
 
 function exitMyQso() {

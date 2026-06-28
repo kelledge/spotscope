@@ -41,7 +41,7 @@ html[data-theme="light"] .leaflet-tile { filter: none; }
 /* Persistent outline: bright white ring + glow (with a dark halo so it reads on light tiles). */
 .sel-outline { width: 24px; height: 24px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 12px 3px rgba(255,255,255,0.85), 0 0 3px 1px rgba(0,0,0,0.6); }
 /* Loud one-shot burst the moment it's selected (plays a few times, then gone). */
-.sel-burst { width: 24px; height: 24px; border-radius: 50%; border: 4px solid #fff; box-shadow: 0 0 16px #fff; animation: selBurst 0.75s ease-out 3; }
+.sel-burst { width: 24px; height: 24px; border-radius: 50%; border: 4px solid #fff; box-shadow: 0 0 16px #fff; animation: selBurst 0.55s ease-out 1; }
 @keyframes selBurst { 0% { transform: scale(0.4); opacity: 1; } 70% { opacity: 0.5; } 100% { transform: scale(3.8); opacity: 0; } }
 
 .leaflet-container { background: var(--bg); }
@@ -226,10 +226,32 @@ body.fd-mode #hud, body.fd-mode #cq, body.fd-mode #hunt { border-left: 3px solid
 .exd-party.exd-noloc { border-color: #6b5a2a; background: rgba(244,180,26,0.06); }
 .exd-party-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 3px; }
 .exd-party-top b { font-size: 13px; }
+.exd-party-name { cursor: pointer; }
+.exd-party-name:hover { text-decoration: underline; }
 .exd-party-actions { display: flex; align-items: center; gap: 8px; }
 .exd-role { font-size: 9px; color: var(--muted); }
 .queue-btn { appearance: none; cursor: pointer; border: 1px solid var(--accent); background: rgba(79,209,255,0.12); color: var(--accent); border-radius: 4px; padding: 2px 8px; font: 700 10px ui-monospace, monospace; letter-spacing: 0.03em; white-space: nowrap; }
 .queue-btn:hover { background: var(--accent); color: var(--bg); }
+.watch-btn { appearance: none; cursor: pointer; border: 1px solid #f4b41a; background: rgba(244,180,26,0.12); color: #f4b41a; border-radius: 4px; padding: 2px 8px; font: 700 10px ui-monospace, monospace; letter-spacing: 0.03em; white-space: nowrap; }
+.watch-btn:hover { background: #f4b41a; color: #2a1d00; }
+.watch-btn.on { background: #f4b41a; color: #2a1d00; box-shadow: 0 0 7px -1px #f4b41a; }
+/* compact watch toggle inside an exchange row */
+.watch-mini { appearance: none; cursor: pointer; border: 1px solid transparent; background: transparent; padding: 0 3px; border-radius: 4px; font-size: 11px; line-height: 1; opacity: 0.5; }
+.watch-mini:hover { opacity: 1; }
+.watch-mini.on { opacity: 1; border-color: #f4b41a; box-shadow: 0 0 6px -1px #f4b41a; }
+
+/* Watch-next-CQ banner (armed indicator, top-center) */
+#watchBanner {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 2100;
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(40, 30, 6, 0.92); color: #ffd98a; border: 1px solid #f4b41a;
+  border-radius: 8px; padding: 6px 10px; box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+  font: 12px ui-monospace, "SF Mono", Menlo, monospace;
+}
+#watchBanner[hidden] { display: none; }
+#watchBanner b { color: #fff; }
+#watchBanner button { appearance: none; cursor: pointer; border: 0; background: transparent; color: #ffd98a; font-size: 15px; line-height: 1; }
+#watchBanner button:hover { color: #fff; }
 
 /* Station dialog: pin the station's card + "talking to" header, scroll the list. */
 #stnBody { overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
